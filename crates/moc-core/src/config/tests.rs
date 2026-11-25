@@ -473,6 +473,32 @@ fn legacy_roles_migrate_without_restoring_plan_model_behavior() {
 }
 
 #[test]
+fn editor_inspect_preserves_wildcard_model_defaults_for_editing() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let home = dir.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        "[defaults.models.\"gpt-5*\"]\ncontext_window=400000\nreasoning=true\n[providers.openai]\napi='openai_responses'\nbase_url='https://api.openai.com/v1'\n[providers.openai.models.\"gpt-5.4\"]\n",
+    )
+    .unwrap();
+    let boot = core_config(&home, dir.path(), Vec::new());
+    let view = editor::inspect(&boot, moc_protocol::ConfigScope::Global, dir.path()).unwrap();
+    // 既要应用到匹配的模型上，也要在编辑器视图里保留规则本身及其可编辑字段。
+    assert_eq!(
+        view.effective["providers"]["openai"]["models"]["gpt-5.4"]["context_window"],
+        400000
+    );
+    assert_eq!(
+        view.effective["defaults"]["models"]["gpt-5*"]["context_window"],
+        400000
+    );
+    assert!(view.fields.iter().any(|field| {
+        field.path == ["defaults", "models", "gpt-5*", "context_window"]
+    }));
+}
+
+#[test]
 fn recent_models_deduplicate_by_model_and_skip_unavailable() {
     let dir = tempfile::tempdir().expect("临时目录");
     let home = dir.path().join("home");

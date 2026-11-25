@@ -230,8 +230,19 @@ impl SettingsPanel {
         }
     }
 
-    /// 登记可选模型；会话模型由用户在模型选择器中选择。
+    /// 登记可选模型并按已知模型家族补全初始能力；会话模型仍由用户在模型选择器中选择。
     pub(super) fn insert_model(&mut self, provider: &str, id: &str) -> anyhow::Result<()> {
+        let entry = moc_core::config::presets::model_entry_for_id(id);
+        self.insert_model_entry(provider, id, entry)
+    }
+
+    /// 登记可选模型并写入指定的初始元数据对象。
+    pub(super) fn insert_model_entry(
+        &mut self,
+        provider: &str,
+        id: &str,
+        entry: Value,
+    ) -> anyhow::Result<()> {
         anyhow::ensure!(!id.trim().is_empty(), "{}", t!("tui.err.model_id_empty"));
         let path = vec![
             "providers".into(),
@@ -244,7 +255,7 @@ impl SettingsPanel {
             "{}",
             t!("tui.err.model_exists", id = format!("{provider}/{id}"))
         );
-        self.set_value(&path, json!({}));
+        self.set_value(&path, entry);
         Ok(())
     }
 }

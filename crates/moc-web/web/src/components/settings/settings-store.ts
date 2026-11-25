@@ -20,7 +20,11 @@ type SettingsState = {
   /** 在途保存数；>0 时顶栏显示「保存中」。 */
   saving: number;
   savedAt: number | null;
+  /** 从搜索结果跳转至 Providers 时的目标上下文，被 ProvidersSection 消费后清空。 */
+  providerFocus: { providerId: string; modelId?: string; nonce: number } | null;
   setScope: (scope: ConfigScope) => void;
+  focusProvider: (providerId: string, modelId?: string) => void;
+  clearProviderFocus: () => void;
 };
 
 export const useSettings = create<SettingsState>()((set) => ({
@@ -31,7 +35,11 @@ export const useSettings = create<SettingsState>()((set) => ({
   loading: false,
   saving: 0,
   savedAt: null,
+  providerFocus: null,
   setScope: (scope) => set({ scope }),
+  focusProvider: (providerId, modelId) =>
+    set({ providerFocus: { providerId, modelId, nonce: Date.now() } }),
+  clearProviderFocus: () => set({ providerFocus: null }),
 }));
 
 function errorText(error: unknown): string {
@@ -122,4 +130,29 @@ export function writeField(
   targetScope?: ConfigScope,
 ): Promise<boolean> {
   return writeSettings((doc) => setPath(doc, path, value), undefined, targetScope);
+}
+
+/**
+ * 执行删除类修改并弹出带「撤回」按钮的提示；点击撤回基于最新文档精确恢复原节点。
+ */
+export async function writeSettingsWithUndo(
+  mutate: (doc: Doc) => Doc,
+  restore: (doc: Doc) => Doc,
+  message: string,
+  restoredMessage: string,
+  targetScope?: ConfigScope,
+): Promise<boolean> {
+  const scope = targetScope ?? useSettings.getState().scope;
+  const ok = await writeSettings(mutate, undefined, scope);
+  if (ok) {
+    toast.success(message, {
+      action: {
+        label: t("sp.undo"),
+        onClick: () => {
+          void writeSettings(restore, restoredMessage, scope);
+        },
+      },
+    });
+  }
+  return ok;
 }

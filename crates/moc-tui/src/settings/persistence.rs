@@ -24,6 +24,8 @@ pub fn response(
     let mut panel = app.settings.take().expect("回执属于当前设置页");
     if let Job::Models(generation) = job {
         panel.models_response(generation, result);
+    } else if let Job::TestProvider(generation) = job {
+        panel.test_provider_response(generation, result);
     } else {
         panel.pending = None;
         panel.busy = false;

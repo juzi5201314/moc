@@ -26,10 +26,10 @@ pub(in super::super) fn display_value(value: &Value, field: &ConfigField) -> Str
         return t!("tui.values.unset").into_owned();
     }
     if matches!(field.kind, FieldKind::Secret) {
-        return if value.as_str().is_some_and(|text| !text.is_empty()) {
-            "••••••".into()
-        } else {
-            t!("tui.values.unset").into_owned()
+        return match value.as_str() {
+            Some(text) if text.starts_with("env:") || text.starts_with('!') => text.to_owned(),
+            Some(text) if !text.is_empty() => "••••••".into(),
+            _ => t!("tui.values.unset").into_owned(),
         };
     }
     // 字节预算按 KB/MB 显示，避免一串数字看不出量级。

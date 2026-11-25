@@ -31,6 +31,11 @@ pub enum ConfigAction {
         id: String,
         provider: Value,
     },
+    /// 测试供应商连通性与鉴权（不要求先保存配置）。
+    TestProvider {
+        id: String,
+        provider: Value,
+    },
     /// 用户在尚未创建会话的模型选择器中主动选择模型。
     SelectModel {
         cwd: String,
@@ -112,10 +117,44 @@ impl ChoiceOption {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct CatalogModel {
     pub id: String,
     pub name: String,
+    /// 上游返回或按模型系列推断的上下文窗口 token 数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    /// 上游返回或推断的单次最大输出 token 数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    /// 上游返回或推断的推理能力。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<bool>,
+    /// 上游返回或推断的输入模态（如 `["text", "image"]`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<Vec<String>>,
+    /// 上游返回的每百万 token 定价（美元）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<super::config::ModelPricing>,
+    /// 是否支持 Fast Mode。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_mode: Option<bool>,
+    /// 是否为图片生成模型。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_gen: Option<bool>,
+}
+
+/// 供应商连通性测试结果。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderTestResult {
+    pub ok: bool,
+    pub latency_ms: u64,
+    pub endpoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models_count: Option<usize>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -132,6 +171,7 @@ pub enum ConfigReply {
     // 装箱收窄枚举：SettingsDocument 比其余变体大 200+ 字节。
     Settings(Box<SettingsDocument>),
     Models(Vec<CatalogModel>),
+    ProviderTest(ProviderTestResult),
     Maintenance(MaintenanceReport),
     Updated(String),
 }

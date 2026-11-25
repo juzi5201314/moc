@@ -144,7 +144,10 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
     }
     let width = usize::from(area.width);
     let mut hits = Vec::new();
-    let mut title = t!("tui.set.title", sep = SEP).into_owned();
+    let mut title = match panel.scope {
+        moc_protocol::ConfigScope::Global => t!("tui.set.title", sep = SEP).into_owned(),
+        moc_protocol::ConfigScope::Project => t!("tui.set.title_project", sep = SEP).into_owned(),
+    };
     if !panel.rows.is_empty() {
         title.push_str(&format!("  {}/{}", panel.selected + 1, panel.rows.len()));
     }
@@ -291,6 +294,7 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
         (hit.area, Hit::Hint(hit.code, hit.modifiers))
     }));
     draw_discovery_popup(frame, panel, theme, outer, &mut hits);
+    draw_param_picker_popup(frame, panel, theme, outer, &mut hits);
     draw_edit_popup(frame, panel, theme, outer, &mut hits);
     paint_hover(frame, panel, &hits, theme);
     // 失败红字、普通反馈中性色，与主界面 notice 同一套配色；都不铺底。
@@ -373,6 +377,11 @@ fn paint_hover(frame: &mut Frame, panel: &SettingsPanel, hits: &[(Rect, Hit)], t
             .discovery
             .as_ref()
             .is_some_and(|discovery| discovery.cursor != *index),
+        Hit::ParamPickItem(index) => panel
+            .providers
+            .param_picker
+            .as_ref()
+            .is_some_and(|picker| picker.cursor != *index),
         Hit::Item(index) => panel
             .edit
             .as_ref()
@@ -390,6 +399,7 @@ fn paint_hover(frame: &mut Frame, panel: &SettingsPanel, hits: &[(Rect, Hit)], t
 mod providers;
 use providers::draw_discovery_popup;
 use providers::draw_maintenance;
+use providers::draw_param_picker_popup;
 use providers::draw_providers;
 mod fields;
 use fields::draw_fields;

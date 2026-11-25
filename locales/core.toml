@@ -1281,6 +1281,8 @@ model_thinking_non_off = { zh = "providers.%{provider}.models.%{model}.thinking_
 model_default_effort_missing = { zh = "providers.%{provider}.models.%{model} 的 API 默认 thinking effort %{level} 不在 thinking_levels 中", en = "API default thinking effort %{level} for providers.%{provider}.models.%{model} is not in thinking_levels" }
 model_unknown_provider = { zh = "model selector `%{selector}` 引用了不存在的 provider `%{provider}`", en = "Model selector `%{selector}` references unknown provider `%{provider}`" }
 model_unknown_model = { zh = "model selector `%{selector}` 引用了不存在的 model `%{model}`", en = "Model selector `%{selector}` references unknown model `%{model}`" }
+provider_disabled = { zh = "model selector `%{selector}` 所属 provider `%{provider}` 已停用", en = "Provider `%{provider}` referenced by `%{selector}` is disabled" }
+model_disabled = { zh = "model selector `%{selector}` 中的 model `%{model}` 已停用", en = "Model `%{model}` referenced by `%{selector}` is disabled" }
 model_is_image_gen = { zh = "model `%{selector}` 已标记为 Image Gen，仅可在 Image Playground 中使用", en = "Model `%{selector}` is marked as Image Gen and can only be used in Image Playground" }
 model_unsupported_level = { zh = "model %{selector} 不支持 thinking 等级 %{level}；可在该 model 的 Thinking Levels 中调整", en = "Model %{selector} does not support thinking level %{level}; adjust it under Thinking Levels" }
 image_model_unknown_provider = { zh = "图片 model `%{selector}` 引用了不存在的 provider `%{provider}`", en = "Image model `%{selector}` references unknown provider `%{provider}`" }
@@ -1519,3 +1521,11 @@ switch_failed = { zh = "切换分支失败：%{error}", en = "Failed to switch b
 switch_failed_restored = { zh = "切换分支失败（已自动恢复暂存的本地更改）：%{error}", en = "Failed to switch branch (stashed changes were restored): %{error}" }
 switch_failed_stashed = { zh = "切换分支失败：%{error}。本地更改已安全保存在 git stash（%{stash}）中", en = "Failed to switch branch: %{error}. Local changes remain safely saved in git stash (%{stash})" }
 timeout = { zh = "Git 命令执行超时", en = "Git command timed out" }
+
+[core.provider_test]
+ok_models = { zh = "连接成功（%{ms} ms），发现 %{count} 个可用 model", en = "Connected (%{ms} ms), found %{count} models" }
+ok_reachable = { zh = "连接可达（HTTP %{status}，%{ms} ms）", en = "Endpoint reachable (HTTP %{status}, %{ms} ms)" }
+no_models_endpoint = { zh = "服务可达（HTTP %{status}，%{ms} ms），但未开放 /models 接口，请手动添加 model ID", en = "Endpoint reachable (HTTP %{status}, %{ms} ms), but /models is unsupported; add model IDs manually" }
+auth_failed = { zh = "鉴权失败（HTTP %{status}），请检查 API Key 或请求头", en = "Authentication failed (HTTP %{status}); check API Key or headers" }
+http_error = { zh = "上游返回 HTTP %{status}", en = "Upstream returned HTTP %{status}" }
+network_error = { zh = "连接失败：%{error}", en = "Connection failed: %{error}" }

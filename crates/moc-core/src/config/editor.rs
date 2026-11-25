@@ -102,7 +102,15 @@ pub fn inspect(
     let (_, mut effective) = merged(boot, scope, cwd, document.clone())?;
     super::selection::remove_legacy_roles(&mut effective);
     super::remove_deprecated_retention_keys(&mut effective);
+    let defaults_section = effective
+        .as_table()
+        .and_then(|table| table.get("defaults").cloned());
     super::apply_model_defaults(&mut effective)?;
+    // `apply_model_defaults` 会摘除 `[defaults]` 以满足运行时强类型解析；
+    // 编辑器视图需保留 `[defaults.models]`，供 TUI / WebUI 展示与编辑通配默认规则。
+    if let (Some(section), Some(table)) = (defaults_section, effective.as_table_mut()) {
+        table.insert("defaults".into(), section);
+    }
     let mut effective =
         serde_json::to_value(effective).map_err(|error| CoreError::Config(error.to_string()))?;
     catalog::complete_view(&mut effective);

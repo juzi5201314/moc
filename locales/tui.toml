@@ -72,8 +72,17 @@ toggle_off = { zh = "○ Off", en = "○ Off" }
 keep_empty = { zh = "留空则保存为空值", en = "Leave empty to save an empty value" }
 empty_default = { zh = "留空则恢复默认值", en = "Leave empty to restore default" }
 act_more = { zh = "展开或收起超时、重试、代理、headers 与默认请求参数。", en = "Expand or collapse timeout, retry, proxy, headers, and default request params." }
+act_test = { zh = "测试当前 provider 的网络连通性与鉴权，不修改配置。", en = "Test connectivity and authentication for this provider without modifying config." }
 act_fetch = { zh = "打开模型选择弹窗，从 provider 目录批量勾选添加。", en = "Open the model picker to batch-add models from the provider catalog." }
-act_manual = { zh = "手动输入 model ID 并添加到当前 provider。", en = "Manually enter a model ID to add to this provider." }
+act_manual = { zh = "手动输入 model ID 并添加到当前 provider（已知系列自动补全能力）。", en = "Manually enter a model ID to add to this provider (known families auto-filled)." }
+act_filter_models = { zh = "按关键词过滤已配置的 model 列表；留空清除过滤。", en = "Filter configured models by keyword; leave empty to clear." }
+act_add_param = { zh = "搜索并按需添加当前 API 协议支持的请求参数。", en = "Search and add an API request parameter on demand." }
+act_batch_reasoning = { zh = "为已勾选的 model 批量开启 reasoning 能力。", en = "Enable reasoning on all checked models." }
+act_batch_vision = { zh = "为已勾选的 model 批量开启图片输入（vision）能力。", en = "Enable image input on all checked models." }
+act_batch_toggle = { zh = "批量切换已勾选 model 的启用/停用状态。", en = "Toggle enabled state on all checked models." }
+act_batch_delete = { zh = "批量删除当前作用域下已勾选的 model。", en = "Delete all checked explicit models in this scope." }
+act_batch_clear = { zh = "清空已勾选的 model。", en = "Clear checked model selection." }
+act_clone = { zh = "复制当前 provider 或 model 配置到新 ID。", en = "Clone this provider or model configuration to a new ID." }
 act_new = { zh = "新建一个 provider 配置。", en = "Create a new provider configuration." }
 act_remove = { zh = "移除当前 provider 及其下全部 model 配置。", en = "Remove this provider and all its configured models." }
 src_ui = { zh = "UI", en = "UI" }
@@ -90,6 +99,7 @@ settings_modified = { zh = "设置文件已被其他窗口修改；请重新打�
 provider_id_invalid = { zh = "provider ID 仅支持字母、数字、- 和 _。", en = "Provider IDs may only contain letters, digits, -, and _." }
 provider_exists = { zh = "provider %{id} 已存在。", en = "Provider %{id} already exists." }
 url_required = { zh = "请填写 Base URL。", en = "Please enter the Base URL." }
+url_scheme = { zh = "Base URL 必须以 http:// 或 https:// 开头。", en = "Base URL must start with http:// or https://." }
 check_models = { zh = "请先勾选要添加的 model。", en = "Select at least one model to add first." }
 need_provider = { zh = "请先添加 provider 并填写连接参数。", en = "Add a provider and fill in its connection settings first." }
 bad_models_reply = { zh = "拉取模型列表失败：上游返回了非预期的响应格式。", en = "Failed to fetch models: upstream returned an unexpected response." }
@@ -232,6 +242,7 @@ add_key = { zh = "+ Add key", en = "+ Add key" }
 
 [tui.set]
 title = { zh = "Settings%{sep}Global", en = "Settings%{sep}Global" }
+title_project = { zh = "Settings%{sep}Project (.moc/config.toml)", en = "Settings%{sep}Project (.moc/config.toml)" }
 saving = { zh = "%{sep}Saving…", en = "%{sep}Saving…" }
 busy = { zh = "%{sep}Working…", en = "%{sep}Working…" }
 filter_fmt = { zh = "%{sep}Filter: %{filter}", en = "%{sep}Filter: %{filter}" }
@@ -373,10 +384,18 @@ remove_provider = { zh = "Remove provider", en = "Remove provider" }
 edit_operate = { zh = "Edit/Operate", en = "Edit/Operate" }
 switch_field = { zh = "Switch field", en = "Switch field" }
 switch_api = { zh = "Switch API", en = "Switch API" }
+switch_option = { zh = "Switch option", en = "Switch option" }
 reveal_key = { zh = "Show API Key", en = "Show API Key" }
 run_maint = { zh = "Run maintenance", en = "Run maintenance" }
 browse = { zh = "Browse", en = "Browse" }
 select_all = { zh = "Select all", en = "Select all" }
+subtab = { zh = "Sub-tab", en = "Sub-tab" }
+sidebar = { zh = "Providers", en = "Providers" }
+test = { zh = "Test", en = "Test" }
+clone = { zh = "Clone", en = "Clone" }
+toggle_enabled = { zh = "Enable/Disable", en = "Enable/Disable" }
+scope = { zh = "Global/Project", en = "Global/Project" }
+back_models = { zh = "Models", en = "Models" }
 
 [tui.modal]
 search_label = { zh = "Search: ", en = "Search: " }
@@ -442,14 +461,18 @@ pick_desc = { zh = "选择 provider 以配置连接参数与 model 列表。", e
 new_desc = { zh = "按 N 新建 provider。", en = "Press N to create a provider." }
 title_fmt = { zh = "%{id} · Connection & Models", en = "%{id} · Connection & Models" }
 draft_title = { zh = "Add Provider", en = "Add Provider" }
+field_preset = { zh = "Preset", en = "Preset" }
+field_preset_desc = { zh = "按 ←/→ 或 Space 选择常见服务商预设自动填充连接参数，或保留 Custom 手动填写。", en = "Use ←/→ or Space to pick a provider preset to auto-fill connection details, or keep Custom." }
 field_id = { zh = "ID", en = "ID" }
 field_id_desc = { zh = "`id`：provider 配置键名（仅支持字母、数字、- 和 _），用于在 model 路径中标识该 provider（如 openai）。", en = "`id`: Provider key (letters, digits, -, _) used to identify this provider in model paths (e.g. openai)." }
 field_api = { zh = "API", en = "API" }
-field_api_desc = { zh = "`api`：上游协议格式（如 OpenAI Responses、Chat Completions、Anthropic Messages），按 ←/→ 切换。", en = "`api`: Upstream wire protocol (e.g. OpenAI Responses, Chat Completions, Anthropic Messages). Use ←/→ to switch." }
+field_api_desc = { zh = "`api`：上游协议格式，按 ←/→ 或 Space 切换，Enter 前进下一项。", en = "`api`: Upstream wire protocol; use ←/→ or Space to switch, Enter to advance." }
 field_url = { zh = "Base URL", en = "Base URL" }
-field_url_desc = { zh = "`base_url`：上游服务根地址，例如 https://api.openai.com/v1。", en = "`base_url`: Base URL of the provider API endpoint, e.g. https://api.openai.com/v1." }
+field_url_desc = { zh = "`base_url`：上游服务根地址，必须以 http:// 或 https:// 开头，例如 https://api.openai.com/v1。", en = "`base_url`: Base URL of the provider API endpoint (must start with http:// or https://)." }
 field_key = { zh = "API Key", en = "API Key" }
-field_key_desc = { zh = "`api_key`：直接填写 API Key，或通过 env:VAR / !command 动态读取；本地服务无需鉴权时可留空，按 F6 切换显隐。", en = "`api_key`: Enter the API Key directly, or read it dynamically via env:VAR / !command; leave empty if not required. Press F6 to toggle visibility." }
+field_key_desc = { zh = "`api_key`：直接填写 API Key，或通过 env:VAR / !command 动态读取（引用明文显示）；按 F6 切换显隐。", en = "`api_key`: Enter a literal key, env:VAR, or !command (references show plainly); press F6 to toggle visibility." }
+field_test = { zh = "Test connection", en = "Test connection" }
+field_test_desc = { zh = "保存前先测试当前 Base URL 与 API Key 的网络连通性与鉴权。", en = "Test connectivity and authentication for the current Base URL and API Key before saving." }
 field_add_fetch = { zh = "Add & Fetch", en = "Add & Fetch" }
 field_add_fetch_desc = { zh = "保存该 provider 并立即从上游拉取可用 model 列表。", en = "Save this provider and immediately fetch its available models." }
 field_add_only = { zh = "Add", en = "Add" }
@@ -463,12 +486,36 @@ fetch_failed = { zh = "拉取失败：%{err}", en = "Fetch failed: %{err}" }
 no_models = { zh = "该 provider 未返回任何 model，可关闭弹窗后手动添加。", en = "The provider returned no models; close and add them manually." }
 no_match = { zh = "没有匹配的 model，按 Backspace 修改过滤词。", en = "No matching models; press Backspace to edit the filter." }
 added = { zh = " (added)", en = " (added)" }
+added_keep_open = { zh = "已添加 %{count} 个 model，可继续搜索添加或按 Esc 返回。", en = "Added %{count} model(s). Keep searching or press Esc to finish." }
 fetch_title = { zh = "Fetch Models · %{id}", en = "Fetch Models · %{id}" }
 more_fmt = { zh = "%{mark} Advanced", en = "%{mark} Advanced" }
 fetching_short = { zh = "正在获取 model 列表…", en = "Fetching models…" }
 refetch = { zh = "Refetch models", en = "Refetch models" }
 fetch = { zh = "Fetch models", en = "Fetch models" }
+test = { zh = "Test connection", en = "Test connection" }
+testing = { zh = "Testing connection…", en = "Testing connection…" }
 manual = { zh = "+ Add model ID", en = "+ Add model ID" }
+filter_models = { zh = "Filter models", en = "Filter models" }
+filter_models_active = { zh = "Filter: %{query}", en = "Filter: %{query}" }
+filter_models_note = { zh = "输入关键词过滤已配置的 model；留空恢复全部显示。", en = "Type a keyword to filter configured models; leave empty to show all." }
+add_param = { zh = "+ Add parameter", en = "+ Add parameter" }
+param_filter_hint = { zh = "输入参数名或说明搜索", en = "Type a parameter name or description to filter" }
+no_param_match = { zh = "没有匹配的可用参数。", en = "No matching parameters." }
+batch_reasoning = { zh = "Batch: +Reasoning (%{count})", en = "Batch: +Reasoning (%{count})" }
+batch_vision = { zh = "Batch: +Image (%{count})", en = "Batch: +Image (%{count})" }
+batch_toggle_enabled = { zh = "Batch: Toggle enabled (%{count})", en = "Batch: Toggle enabled (%{count})" }
+batch_delete = { zh = "Batch: Delete (%{count})", en = "Batch: Delete (%{count})" }
+batch_clear = { zh = "Clear selection", en = "Clear selection" }
+batch_delete_snap = { zh = "Batch delete models", en = "Batch delete models" }
+batch_no_explicit = { zh = "选中的 model 均继承自 Global，当前作用域无法删除。", en = "All selected models are inherited from Global and cannot be deleted in Project scope." }
+clone = { zh = "Clone", en = "Clone" }
+clone_provider_title = { zh = "Clone Provider · %{id}", en = "Clone Provider · %{id}" }
+clone_model_title = { zh = "Clone Model · %{id}", en = "Clone Model · %{id}" }
+clone_model_note = { zh = "输入新 model ID，将复制当前 model 的全部参数与兼容项。", en = "Enter a new model ID to clone all capabilities and compat settings." }
+disabled_tag = { zh = "Disabled", en = "Disabled" }
+inherited_no_delete = { zh = "该 provider 继承自 Global 配置，请按 s 切回 Global 后删除。", en = "This provider is inherited from Global; press s to switch to Global before deleting." }
+key_none = { zh = "No key", en = "No key" }
+key_set = { zh = "Key set", en = "Key set" }
 remove = { zh = "Remove provider", en = "Remove provider" }
 add_model_title = { zh = "Add Model · %{id}", en = "Add Model · %{id}" }
 model_id_note = { zh = "model ID 将原样保存，可包含 /。", en = "The model ID is stored verbatim and may contain /." }

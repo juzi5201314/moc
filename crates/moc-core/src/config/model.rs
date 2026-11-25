@@ -125,6 +125,8 @@ impl Default for ModelRoles {
 #[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct ProviderDocument {
+    /// 是否启用该供应商；关闭后其下模型不在选择器显示且不可调用，但保留配置。
+    pub enabled: bool,
     pub api: Option<ProviderApi>,
     pub base_url: String,
     pub api_key: String,
@@ -143,6 +145,7 @@ pub(super) struct ProviderDocument {
 impl Default for ProviderDocument {
     fn default() -> Self {
         Self {
+            enabled: true,
             api: None,
             base_url: String::new(),
             api_key: String::new(),
@@ -187,6 +190,8 @@ where
 #[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct ModelDocument {
+    /// 是否启用该模型；关闭后从模型选择器隐藏，但保留模型参数配置。
+    pub enabled: bool,
     pub context_window: u64,
     pub max_output_tokens: u32,
     /// 请求体字节上限；留空使用协议无关的 50 MiB 默认值。
@@ -206,6 +211,7 @@ pub(super) struct ModelDocument {
 impl Default for ModelDocument {
     fn default() -> Self {
         Self {
+            enabled: true,
             context_window: 200_000,
             max_output_tokens: 32_000,
             max_request_bytes: None,
@@ -431,6 +437,7 @@ impl ResolvedModel {
 
 #[derive(Clone)]
 pub(super) struct ResolvedProvider {
+    enabled: bool,
     api: ProviderApi,
     base_url: String,
     auth: Auth,
@@ -535,16 +542,22 @@ impl ResolvedProvider {
             }
         }
 
-        let key = resolve_api_key(id, &document.api_key)?;
-        let auth = match (api.protocol(), key) {
-            (_, None) => Auth::None,
-            (Protocol::AnthropicMessages, Some(value)) => Auth::Header {
-                name: "x-api-key".into(),
-                value,
-            },
-            (_, Some(value)) => Auth::Bearer(value),
+        // 已停用的供应商跳过密钥环境变量/命令求值，避免停用项阻塞其他配置保存。
+        let auth = if document.enabled {
+            let key = resolve_api_key(id, &document.api_key)?;
+            match (api.protocol(), key) {
+                (_, None) => Auth::None,
+                (Protocol::AnthropicMessages, Some(value)) => Auth::Header {
+                    name: "x-api-key".into(),
+                    value,
+                },
+                (_, Some(value)) => Auth::Bearer(value),
+            }
+        } else {
+            Auth::None
         };
         Ok(Self {
+            enabled: document.enabled,
             api,
             base_url: document.base_url,
             auth,
@@ -761,6 +774,16 @@ pub(super) fn resolve_one(
             .into_owned(),
         )
     })?;
+    if !provider.enabled {
+        return Err(CoreError::Config(
+            t!(
+                "core.err.provider_disabled",
+                selector = selector,
+                provider = parsed.provider_id
+            )
+            .into_owned(),
+        ));
+    }
     let model = provider.models.get(parsed.model_id).ok_or_else(|| {
         CoreError::Config(
             t!(
@@ -771,6 +794,16 @@ pub(super) fn resolve_one(
             .into_owned(),
         )
     })?;
+    if !model.enabled {
+        return Err(CoreError::Config(
+            t!(
+                "core.err.model_disabled",
+                selector = selector,
+                model = parsed.model_id
+            )
+            .into_owned(),
+        ));
+    }
     if model.image_gen {
         return Err(CoreError::Config(
             t!("core.err.model_is_image_gen", selector = selector).into_owned(),
@@ -821,6 +854,16 @@ pub(super) fn resolve_image_one(
             .into_owned(),
         )
     })?;
+    if !provider.enabled {
+        return Err(CoreError::Config(
+            t!(
+                "core.err.provider_disabled",
+                selector = selector,
+                provider = provider_id
+            )
+            .into_owned(),
+        ));
+    }
     let model = provider.models.get(model_id).ok_or_else(|| {
         CoreError::Config(
             t!(
@@ -831,6 +874,16 @@ pub(super) fn resolve_image_one(
             .into_owned(),
         )
     })?;
+    if !model.enabled {
+        return Err(CoreError::Config(
+            t!(
+                "core.err.model_disabled",
+                selector = selector,
+                model = model_id
+            )
+            .into_owned(),
+        ));
+    }
     if !model.image_gen {
         return Err(CoreError::Config(
             t!("core.err.image_model_not_flagged", selector = selector).into_owned(),
@@ -895,8 +948,11 @@ fn resolve_fusion(
 pub(super) fn all_models(providers: &BTreeMap<String, ResolvedProvider>) -> Vec<ResolvedModel> {
     let mut result = Vec::new();
     for (provider_id, provider) in providers {
+        if !provider.enabled {
+            continue;
+        }
         for (model_id, model) in &provider.models {
-            if !model.image_gen {
+            if model.enabled && !model.image_gen {
                 result.push(provider.resolve_model(provider_id, model_id, model, None));
             }
         }
@@ -909,8 +965,11 @@ pub(super) fn all_image_models(
 ) -> Vec<ResolvedModel> {
     let mut result = Vec::new();
     for (provider_id, provider) in providers {
+        if !provider.enabled {
+            continue;
+        }
         for (model_id, model) in &provider.models {
-            if model.image_gen {
+            if model.enabled && model.image_gen {
                 result.push(provider.resolve_model(provider_id, model_id, model, None));
             }
         }
@@ -1075,5 +1134,46 @@ mod tests {
         assert!(resolve_one(&catalog, "p/img-1", None).is_err());
         assert!(resolve_image_one(&catalog, "p/chat-1").is_err());
         assert!(resolve_image_one(&catalog, "p/img-1").is_ok());
+    }
+
+    #[test]
+    fn disabled_provider_and_model_are_excluded_and_skip_secret_resolution() {
+        let mut active_models = BTreeMap::new();
+        active_models.insert("enabled-m".to_owned(), ModelDocument::default());
+        active_models.insert(
+            "disabled-m".to_owned(),
+            ModelDocument {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        let active_provider = ProviderDocument {
+            api: Some(ProviderApi::OpenaiChat),
+            base_url: "https://example.com/v1".into(),
+            models: active_models,
+            ..Default::default()
+        };
+
+        let mut disabled_models = BTreeMap::new();
+        disabled_models.insert("ghost".to_owned(), ModelDocument::default());
+        let disabled_provider = ProviderDocument {
+            enabled: false,
+            api: Some(ProviderApi::OpenaiChat),
+            base_url: "https://disabled.example/v1".into(),
+            api_key: "env:MOC_DEFINITELY_UNSET_TEST_KEY_999".into(),
+            models: disabled_models,
+            ..Default::default()
+        };
+
+        let mut map = BTreeMap::new();
+        map.insert("active".to_owned(), active_provider);
+        map.insert("paused".to_owned(), disabled_provider);
+
+        let catalog = resolve_catalog(&map).expect("停用的供应商不应因缺失环境变量而阻止加载");
+        let agent_ids: Vec<_> = all_models(&catalog).into_iter().map(|m| m.id).collect();
+        assert_eq!(agent_ids, vec!["active/enabled-m"]);
+        assert!(resolve_one(&catalog, "active/enabled-m", None).is_ok());
+        assert!(resolve_one(&catalog, "active/disabled-m", None).is_err());
+        assert!(resolve_one(&catalog, "paused/ghost", None).is_err());
     }
 }

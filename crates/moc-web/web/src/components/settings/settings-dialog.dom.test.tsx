@@ -92,3 +92,152 @@ it("加载失败或未连接时保留完整分类导航", () => {
   fireEvent.click(nav.getByRole("button", { name: "General" }));
   expect(view.getByRole("button", { name: "Dark" })).toBeTruthy();
 });
+
+it("新建供应商支持预设自动填充、URL 协议校验与 API Key 显隐/env 徽标", () => {
+  useSettings.setState({ docs: { global: doc } });
+  const view = openDialog();
+  const nav = within(view.getByRole("navigation"));
+  fireEvent.click(nav.getByRole("button", { name: "Providers" }));
+
+  // 点击 OpenAI 预设自动填入 ID / URL / env:OPENAI_API_KEY，且 env: 引用默认明文并带 ENV 徽标
+  fireEvent.click(view.getByRole("button", { name: "OpenAI" }));
+  const urlInput = view.getByPlaceholderText("https://api.example.com/v1") as HTMLInputElement;
+  expect(urlInput.value).toBe("https://api.openai.com/v1");
+  const keyInput = view.getByDisplayValue("env:OPENAI_API_KEY") as HTMLInputElement;
+  expect(keyInput.type).toBe("text");
+  expect(view.getByText("env")).toBeTruthy();
+
+  // 改为字面密钥后默认隐藏，点击显隐按钮切换为 text
+  fireEvent.change(keyInput, { target: { value: "sk-live-secret" } });
+  expect(keyInput.type).toBe("password");
+  fireEvent.click(view.getByRole("button", { name: "Show API Key" }));
+  expect(keyInput.type).toBe("text");
+
+  // 输入缺少协议头的 URL 时前端立即给出错误提示
+  fireEvent.change(urlInput, { target: { value: "api.openai.com/v1" } });
+  expect(view.getByText("Base URL 必须以 http:// 或 https:// 开头。")).toBeTruthy();
+});
+
+it("搜索可直达供应商与模型，详情支持模型钻取、通配默认规则与按需添加参数", () => {
+  const providerDoc: SettingsDocument = {
+    ...doc,
+    document: {
+      providers: {
+        acme: {
+          api: "openai_responses",
+          base_url: "https://acme.example/v1",
+          models: {
+            "gpt-5": {
+              context_window: 400000,
+              reasoning: true,
+              thinking_levels: ["low", "high"],
+            },
+          },
+        },
+      },
+      defaults: {
+        models: {
+          "gpt-*": { context_window: 200000 },
+        },
+      },
+    },
+    effective: {
+      providers: {
+        acme: {
+          api: "openai_responses",
+          base_url: "https://acme.example/v1",
+          models: {
+            "gpt-5": {
+              context_window: 400000,
+              reasoning: true,
+              thinking_levels: ["low", "high"],
+            },
+          },
+        },
+      },
+      defaults: {
+        models: {
+          "gpt-*": { context_window: 200000 },
+        },
+      },
+    },
+    fields: [
+      {
+        tab: "providers",
+        path: ["providers", "acme", "api"],
+        label: "API",
+        description: "Protocol",
+        kind: {
+          type: "choice",
+          options: [
+            { value: "openai_chat", label: "OpenAI Chat" },
+            { value: "openai_responses", label: "OpenAI Responses" },
+          ],
+        },
+        advanced: false,
+      },
+      {
+        tab: "providers",
+        path: ["providers", "acme", "models", "gpt-5", "context_window"],
+        label: "context_window",
+        description: "Context window",
+        kind: { type: "integer" },
+        advanced: false,
+      },
+      {
+        tab: "providers",
+        path: ["providers", "acme", "models", "gpt-5", "thinking_levels"],
+        label: "thinking_levels",
+        description: "Thinking levels",
+        kind: { type: "strings" },
+        advanced: false,
+      },
+      {
+        tab: "providers",
+        path: ["providers", "acme", "models", "gpt-5", "pricing"],
+        label: "pricing",
+        description: "Pricing",
+        kind: { type: "json" },
+        advanced: false,
+      },
+      {
+        tab: "providers",
+        path: [
+          "providers",
+          "acme",
+          "models",
+          "gpt-5",
+          "compat",
+          "extra_body",
+          "reasoning",
+          "summary",
+        ],
+        label: "summary",
+        description: "Reasoning summary",
+        kind: { type: "text" },
+        advanced: true,
+      },
+    ],
+  };
+  useSettings.setState({ docs: { global: providerDoc } });
+  const view = openDialog();
+
+  // 全局搜索命中供应商与模型并直接跳转至模型编辑器
+  fireEvent.change(view.getByPlaceholderText("搜索设置"), { target: { value: "gpt-5" } });
+  fireEvent.click(view.getByRole("button", { name: /acme \/ gpt-5/ }));
+  expect(view.getByRole("heading", { name: "gpt-5" })).toBeTruthy();
+  // 定价结构化 4 格输入存在，不再是 JSON 文本框
+  expect(view.getByLabelText("pricing input")).toBeTruthy();
+  // 思考等级芯片可见（已选展示为芯片，未选内置等级可点击添加）
+  expect(view.getByText("high")).toBeTruthy();
+  expect(view.getByRole("button", { name: /medium/ })).toBeTruthy();
+
+  // 切到 Params 子页：未配置参数默认折叠，点击 Add parameter 后可在列表中找到
+  fireEvent.click(view.getByRole("button", { name: "Params & Headers" }));
+  expect(view.queryByText("Reasoning summary")).toBeNull();
+  expect(view.getByRole("button", { name: /Add parameter/ })).toBeTruthy();
+
+  // 切到通配默认规则视图可见已有规则
+  fireEvent.click(view.getByRole("button", { name: /Defaults/ }));
+  expect(view.getByText("gpt-*")).toBeTruthy();
+});

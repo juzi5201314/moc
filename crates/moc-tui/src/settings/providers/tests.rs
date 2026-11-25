@@ -11,6 +11,7 @@ use wiremock::{
 fn panel(document: Value) -> SettingsPanel {
     let mut panel = SettingsPanel {
         id: 1,
+        scope: ConfigScope::Global,
         cwd: "/tmp".into(),
         data: Some(SettingsDocument {
             path: String::new(),
@@ -59,6 +60,7 @@ fn discovery(generation: u64, ids: &[&str]) -> Discovery {
             .map(|id| CatalogModel {
                 id: (*id).into(),
                 name: (*id).into(),
+                ..Default::default()
             })
             .collect(),
         checked: BTreeSet::new(),
@@ -67,97 +69,103 @@ fn discovery(generation: u64, ids: &[&str]) -> Discovery {
         offset: 0,
         scroll: Default::default(),
         error: None,
+        status: None,
         pending: None,
     }
 }
 
 #[test]
-fn secondary_connection_and_api_parameters_fold_under_more_and_model_advanced() {
+fn provider_and_model_subtabs_separate_connection_compat_and_on_demand_params() {
     let mut panel = panel(json!({"providers":{"p":{"api":"openai_responses","models":{"m":{}}}}}));
-    assert!(!panel.providers.more);
-    let more_index = panel
-        .rows
-        .iter()
-        .position(|row| matches!(row.kind, RowKind::Action(ProviderAction::More)))
-        .expect("存在高级选项折叠行");
-    let provider_group = "providers/p/extra_body/reasoning";
+    // 默认停在 Models 子页：只展示拉取/手动添加动作和模型行，不混杂连接字段与几十个参数。
+    assert_eq!(panel.providers.subtab, ProviderSubTab::Models);
     assert!(
-        !panel
+        panel
             .rows
             .iter()
-            .any(|row| matches!(&row.kind, RowKind::Group(group) if group.key == provider_group)),
-        "默认收起供应商高级请求参数"
+            .any(|row| matches!(row.kind, RowKind::Action(ProviderAction::Fetch)))
     );
     assert!(
         !panel.rows.iter().any(|row| {
             matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == ["providers", "p", "timeout_secs"])
         }),
-        "默认收起供应商次要连接项"
+        "Models 子页不应混入连接字段"
     );
 
-    panel.providers.more = true;
-    panel.expanded.insert(provider_group.into());
-    panel.rebuild_rows();
-    let timeout_index = panel
-        .rows
-        .iter()
-        .position(|row| {
-            matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == ["providers", "p", "timeout_secs"])
-        })
-        .expect("展开高级选项后显示超时配置");
-    let group_index = panel
-        .rows
-        .iter()
-        .position(|row| matches!(&row.kind, RowKind::Group(group) if group.key == provider_group))
-        .expect("展开高级选项后显示供应商请求参数组");
+    // 切到 Connection 子页：显示测试连接动作与连接配置，不显示 extra_body 参数。
+    panel.set_provider_subtab(ProviderSubTab::Connection);
     assert!(
-        timeout_index > more_index && group_index > more_index,
-        "高级选项必须在折叠标题下方而不是上方展开"
+        panel
+            .rows
+            .iter()
+            .any(|row| matches!(row.kind, RowKind::Action(ProviderAction::Test)))
     );
+    assert!(panel.rows.iter().any(|row| {
+        matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == ["providers", "p", "timeout_secs"])
+    }));
+    assert!(
+        !panel.rows.iter().any(|row| {
+            matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == ["providers", "p", "extra_body", "reasoning", "summary"])
+        }),
+        "Connection 子页不应平铺 API 参数"
+    );
+
+    // 切到 Params 子页：未配置的参数默认隐藏，按需固定（pinned_params）后才展开。
+    panel.set_provider_subtab(ProviderSubTab::Params);
+    assert!(
+        panel
+            .rows
+            .iter()
+            .any(|row| matches!(row.kind, RowKind::Action(ProviderAction::AddParam)))
+    );
+    assert!(
+        !panel.rows.iter().any(|row| {
+            matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == ["providers", "p", "extra_body", "reasoning", "summary"])
+        }),
+        "未配置的请求参数默认按需隐藏"
+    );
+    panel
+        .providers
+        .pinned_params
+        .insert("providers/p/extra_body/reasoning/summary".into());
+    panel.rebuild_rows();
     assert!(panel.rows.iter().any(|row| {
         matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == ["providers", "p", "extra_body", "reasoning", "summary"])
     }));
 
-    panel.expanded.insert("providers/p/models/m".into());
-    panel.rebuild_rows();
+    // 钻取模型编辑：General 放基础能力，Compat 放兼容与高级限制，Params 按需添加模型请求参数。
+    panel.open_model("p", "m");
+    assert_eq!(panel.providers.model_subtab, ModelSubTab::General);
+    assert!(panel.rows.iter().any(|row| {
+        matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == ["providers", "p", "models", "m", "context_window"])
+    }));
     assert!(
         !panel.rows.iter().any(|row| {
             matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == ["providers", "p", "models", "m", "max_request_bytes"])
         }),
-        "模型请求体上限应收入模型高级选项"
-    );
-    assert!(
-        !panel.rows.iter().any(|row| {
-            matches!(&row.kind, RowKind::Group(group) if group.key == "providers/p/models/m/compat/extra_body/reasoning")
-        }),
-        "模型请求参数组应收入模型高级选项"
+        "模型请求体上限应归入 Compat 子页"
     );
 
+    panel.set_model_subtab(ModelSubTab::Compat);
+    assert!(panel.rows.iter().any(|row| {
+        matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == ["providers", "p", "models", "m", "max_request_bytes"])
+    }));
+
+    panel.set_model_subtab(ModelSubTab::Params);
+    assert!(
+        !panel.rows.iter().any(|row| {
+            matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == ["providers", "p", "models", "m", "compat", "extra_body", "reasoning", "summary"])
+        }),
+        "模型未配置参数默认隐藏"
+    );
     panel
-        .expanded
-        .insert("providers/p/models/m/__advanced".into());
-    panel
-        .expanded
-        .insert("providers/p/models/m/compat/extra_body/reasoning".into());
+        .providers
+        .pinned_params
+        .insert("providers/p/models/m/compat/extra_body/reasoning/summary".into());
     panel.rebuild_rows();
-    for path in [
-        vec!["providers", "p", "models", "m", "max_request_bytes"],
-        vec![
-            "providers",
-            "p",
-            "models",
-            "m",
-            "compat",
-            "extra_body",
-            "reasoning",
-            "summary",
-        ],
-    ] {
-        let path: Vec<String> = path.into_iter().map(str::to_owned).collect();
-        assert!(panel.rows.iter().any(
-            |row| matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == path)
-        ));
-    }
+    assert!(panel.rows.iter().any(|row| {
+        matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == ["providers", "p", "models", "m", "compat", "extra_body", "reasoning", "summary"])
+    }));
 }
 
 #[test]
@@ -267,6 +275,7 @@ fn stale_discovery_does_not_cross_providers_or_replace_a_retry() {
         Ok(ConfigReply::Models(vec![CatalogModel {
             id: "late".into(),
             name: "late".into(),
+            ..Default::default()
         }])),
     );
     assert!(panel.providers.discovery.is_none());
@@ -366,6 +375,8 @@ async fn create_discover_filter_add_and_edit_in_one_page() {
     settings.new_provider();
     app.settings = Some(settings);
     let press = |app: &mut App, mods, code| super::super::handle_key(app, &connection, mods, code);
+    // 0 是 Preset 行，先 Tab 到 1 (ID)
+    press(&mut app, KeyModifiers::NONE, KeyCode::Tab);
     super::super::paste(&mut app, "new-provider");
     press(&mut app, KeyModifiers::NONE, KeyCode::Tab);
     press(&mut app, KeyModifiers::NONE, KeyCode::Tab);
@@ -418,13 +429,14 @@ async fn create_discover_filter_add_and_edit_in_one_page() {
         doc.pointer("/models/roles/default").is_none(),
         "导入候选不替用户选择模型"
     );
-    assert!(
-        panel
-            .expanded
-            .contains("providers/new-provider/models/a/fast")
-    );
+    // 批量添加后保持发现弹窗打开并显示成功反馈，允许继续筛选添加，Esc 关闭。
+    let d = panel.providers.discovery.as_ref().expect("添加后弹窗保持打开");
+    assert!(d.checked.is_empty());
+    assert!(d.status.is_some());
     app.settings = Some(panel);
     response(&mut app, &connection, &mut receiver, false).await;
+    press(&mut app, KeyModifiers::NONE, KeyCode::Esc);
+    assert!(app.settings.as_ref().unwrap().providers.discovery.is_none());
     // 重复添加保留输入及错误；Esc 后可以继续添加，不跳去角色页。
     press(&mut app, KeyModifiers::NONE, KeyCode::Char('a'));
     super::super::paste(&mut app, "a/fast");
@@ -445,6 +457,11 @@ async fn create_discover_filter_add_and_edit_in_one_page() {
     press(&mut app, KeyModifiers::NONE, KeyCode::Enter);
     response(&mut app, &connection, &mut receiver, false).await;
     let panel = app.settings.as_mut().unwrap();
+    assert_eq!(
+        panel.providers.editing_model.as_deref(),
+        Some("manual/model"),
+        "手动添加模型后直接钻取至模型编辑视图"
+    );
     let path: Vec<String> = [
         "providers",
         "new-provider",
@@ -504,4 +521,65 @@ async fn create_discover_filter_add_and_edit_in_one_page() {
     );
     connection.shutdown().await;
     core.shutdown().await;
+}
+
+#[test]
+fn draft_preset_autofills_and_sidebar_preview_and_image_summary_work() {
+    let mut panel = panel(json!({
+        "providers": {
+            "a": {
+                "api": "openai_responses",
+                "models": {
+                    "img": { "image_gen": true },
+                    "off-m": { "enabled": false }
+                }
+            },
+            "b": { "api": "anthropic_messages", "models": {} }
+        }
+    }));
+    // 侧栏实时预览：移动光标即切换右侧详情，且保留侧栏焦点。
+    panel.providers.sidebar = true;
+    panel.preview_provider(1);
+    assert_eq!(panel.providers.selected.as_deref(), Some("b"));
+    assert!(panel.providers.sidebar);
+
+    // image_gen 模型摘要不误显上下文/输出上限，停用模型带 Disabled 标记。
+    assert_eq!(panel.model_summary("a", "img"), "Image Gen");
+    assert!(panel.model_summary("a", "off-m").contains("Disabled"));
+
+    // 新建表单预设自动填充 ID / API / URL / Key 提示。
+    let mut draft = ProviderDraft::default();
+    draft.apply_preset(1, &panel.provider_ids()); // OpenAI
+    assert_eq!(draft.id.input.text, "openai");
+    assert_eq!(APIS[draft.api].0, "openai_responses");
+    assert_eq!(draft.url.input.text, "https://api.openai.com/v1");
+    assert_eq!(draft.key.input.text, "env:OPENAI_API_KEY");
+    // 地址缺少协议头时预览校验报错
+    draft.url.input = PromptState::from_text("api.openai.com/v1".into());
+    assert!(draft.preview_payload().is_err());
+}
+
+#[test]
+fn discovery_popup_cursor_aligns_with_locale_search_prefix_width() {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let render_cursor = |locale: &str| {
+        moc_i18n::set_locale(locale);
+        let mut p = panel(json!({"providers": {"p": {"api": "openai_chat"}}}));
+        p.providers.discovery = Some(discovery(1, &["gpt-5"]));
+        let mut term = Terminal::new(TestBackend::new(90, 24)).unwrap();
+        let theme = crate::theme::Theme::global();
+        term.draw(|frame| {
+            super::super::render::draw(frame, &mut p, false, &theme);
+        })
+        .unwrap();
+        let pos = term.get_cursor_position().unwrap();
+        let prefix = t!("tui.providers.search_prefix").into_owned();
+        (pos, crate::render::wrap::str_width(&prefix))
+    };
+
+    let (zh_pos, zh_w) = render_cursor("zh");
+    let (en_pos, en_w) = render_cursor("en");
+    assert_eq!(en_pos.x.saturating_sub(zh_pos.x) as usize, en_w.saturating_sub(zh_w));
+    moc_i18n::set_locale("zh");
 }

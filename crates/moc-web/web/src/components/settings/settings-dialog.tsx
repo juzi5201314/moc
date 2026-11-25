@@ -90,6 +90,7 @@ const NAV: { group: MsgKey; items: SectionMeta[] }[] = [
         label: "sd.providers",
         description: "sd.providers_desc",
         icon: <ServerIcon />,
+        fields: byPath("providers", "defaults"),
       },
       {
         id: "roles",
@@ -194,19 +195,20 @@ export function SaveStatus() {
     const timer = window.setTimeout(() => setRecent(false), 1800);
     return () => window.clearTimeout(timer);
   }, [savedAt]);
-  if (saving > 0) {
-    return (
-      <span className="flex items-center gap-1.5 text-xs text-text-tertiary">
-        <Loader2Icon className="size-3.5 animate-spin" />
-        {t("sd.saving")}
-      </span>
-    );
-  }
-  if (!recent) return null;
+  // 固定槽宽避免保存态显隐时把右侧范围切换按钮挤得左右跳动。
   return (
-    <span className="flex items-center gap-1 text-xs text-success">
-      <CheckIcon className="size-3.5" />
-      {t("sd.saved")}
+    <span className="inline-flex min-w-[60px] shrink-0 items-center justify-end gap-1 text-xs">
+      {saving > 0 ? (
+        <span className="flex items-center gap-1.5 text-text-tertiary">
+          <Loader2Icon className="size-3.5 animate-spin" />
+          {t("sd.saving")}
+        </span>
+      ) : recent ? (
+        <span className="flex items-center gap-1 text-success">
+          <CheckIcon className="size-3.5" />
+          {t("sd.saved")}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -245,37 +247,101 @@ export function ScopeSwitch({ doc }: { doc?: SettingsDocument }) {
   );
 }
 
-function SearchResults({ query, doc }: { query: string; doc: SettingsDocument }) {
+function SearchResults({
+  query,
+  doc,
+  onJumpProvider,
+}: {
+  query: string;
+  doc: SettingsDocument;
+  onJumpProvider: (providerId: string, modelId?: string) => void;
+}) {
   const t = useT();
   const needle = query.trim().toLowerCase();
+
+  const providerHits = useMemo(() => {
+    const hits: { providerId: string; modelId?: string }[] = [];
+    const effective =
+      typeof doc.effective === "object" && doc.effective !== null
+        ? (doc.effective as Record<string, unknown>)
+        : null;
+    const root = effective?.providers;
+    if (typeof root === "object" && root !== null && !Array.isArray(root)) {
+      for (const [pid, pval] of Object.entries(root as Record<string, unknown>).toSorted(
+        ([a], [b]) => a.localeCompare(b),
+      )) {
+        if (pid.toLowerCase().includes(needle)) {
+          hits.push({ providerId: pid });
+        }
+        const models =
+          typeof pval === "object" && pval !== null && !Array.isArray(pval)
+            ? (pval as Record<string, unknown>).models
+            : null;
+        if (typeof models === "object" && models !== null && !Array.isArray(models)) {
+          for (const mid of Object.keys(models).toSorted()) {
+            if (
+              mid.toLowerCase().includes(needle) ||
+              `${pid}/${mid}`.toLowerCase().includes(needle)
+            ) {
+              hits.push({ providerId: pid, modelId: mid });
+            }
+          }
+        }
+      }
+    }
+    return hits.slice(0, 24);
+  }, [doc.effective, needle]);
+
   const groups = useMemo(() => {
     const result: { section: SectionMeta; fields: ConfigField[] }[] = [];
     for (const section of SECTIONS) {
       const matcher = section.fields;
       if (!matcher) continue;
-      const fields = doc.fields.filter(
-        (field) =>
-          matcher(field) &&
-          `${field.label} ${field.description} ${field.path.join(".")}`
-            .toLowerCase()
-            .includes(needle),
-      );
+      const fields = doc.fields
+        .filter(
+          (field) =>
+            matcher(field) &&
+            `${field.label} ${field.description} ${field.path.join(".")}`
+              .toLowerCase()
+              .includes(needle),
+        )
+        .slice(0, 40);
       if (fields.length > 0) result.push({ section, fields });
     }
     return result;
   }, [doc.fields, needle]);
 
-  if (groups.length === 0) {
+  if (providerHits.length === 0 && groups.length === 0) {
     return (
       <p className="py-16 text-center text-ui text-text-tertiary">{t("sd.no_match", { query })}</p>
     );
   }
   return (
     <div className="space-y-7">
+      {providerHits.length > 0 && (
+        <section className="space-y-2">
+          <h3 className="text-ui font-semibold">Providers & Models</h3>
+          <div className="divide-y divide-border-subtle overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-border-subtle">
+            {providerHits.map((hit) => (
+              <button
+                key={`${hit.providerId}/${hit.modelId ?? ""}`}
+                type="button"
+                onClick={() => onJumpProvider(hit.providerId, hit.modelId)}
+                className="flex h-10 w-full items-center justify-between gap-3 px-3.5 text-left text-ui transition-colors hover:bg-surface-hover"
+              >
+                <span className="min-w-0 truncate font-mono text-xs text-foreground">
+                  {hit.modelId ? `${hit.providerId} / ${hit.modelId}` : hit.providerId}
+                </span>
+                <span className="shrink-0 text-xs text-brand">{t("sp.open_in_providers")}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
       {groups.map(({ section, fields }) => (
         <section key={section.id} className="space-y-2">
           <h3 className="text-ui font-semibold">{t(section.label)}</h3>
-          <FieldList fields={fields} doc={doc} />
+          <FieldList fields={fields} doc={doc} includeAdvanced />
         </section>
       ))}
     </div>
@@ -331,7 +397,19 @@ export function SettingsDialog() {
         </div>
       );
     }
-    if (query) return <SearchResults query={query} doc={doc} />;
+    if (query) {
+      return (
+        <SearchResults
+          query={query}
+          doc={doc}
+          onJumpProvider={(providerId, modelId) => {
+            useSettings.getState().focusProvider(providerId, modelId);
+            setSection("providers");
+            setQuery("");
+          }}
+        />
+      );
+    }
     if (section === "providers") return <ProvidersSection doc={doc} />;
     if (section === "roles") return <RolesSection doc={doc} />;
     const fields = meta.fields ? doc.fields.filter(meta.fields) : [];
@@ -365,6 +443,16 @@ export function SettingsDialog() {
           if (!target?.isConnected) return;
           event.preventDefault();
           target.focus();
+        }}
+        onPointerDownOutside={(event) => {
+          if (event.target instanceof Element && event.target.closest("[data-sonner-toaster]")) {
+            event.preventDefault();
+          }
+        }}
+        onInteractOutside={(event) => {
+          if (event.target instanceof Element && event.target.closest("[data-sonner-toaster]")) {
+            event.preventDefault();
+          }
         }}
       >
         <nav className="flex min-h-0 w-full shrink-0 flex-col border-b border-border-subtle bg-panel md:w-[220px] md:border-r md:border-b-0">
@@ -411,8 +499,8 @@ export function SettingsDialog() {
         </nav>
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <header className="flex shrink-0 flex-col items-start justify-between gap-3 border-b border-border-subtle px-4 pt-4 pb-3 md:flex-row md:gap-4 md:px-7 md:pt-5 md:pr-14 md:pb-4">
-            <div className="min-w-0">
+          <header className="flex shrink-0 flex-col items-start justify-between gap-2.5 border-b border-border-subtle px-4 pt-4 pb-3 lg:flex-row lg:gap-4 md:px-7 md:pt-5 md:pr-14 md:pb-4">
+            <div className="min-w-0 flex-1">
               <DialogTitle>{query ? t("sd.search_title") : t(meta.label)}</DialogTitle>
               <DialogDescription className="mt-1 text-xs leading-5">
                 {query
@@ -422,7 +510,7 @@ export function SettingsDialog() {
                   : t(meta.description)}
               </DialogDescription>
             </div>
-            <div className="flex min-w-0 max-w-full items-center gap-3 pt-0.5 md:shrink-0">
+            <div className="flex min-w-0 max-w-full items-center gap-3 pt-0.5 lg:shrink-0">
               <SaveStatus />
               {!local && <ScopeSwitch doc={doc} />}
             </div>

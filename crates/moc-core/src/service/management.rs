@@ -335,6 +335,14 @@ pub(super) async fn manage(
                 models = discovery::models(&id, provider) => models.map(ConfigReply::Models),
             }
         }
+        ConfigAction::TestProvider { id, mut provider } => {
+            editor::remove_nulls(&mut provider);
+            let cancel = ctx.cancel();
+            tokio::select! {
+                _ = cancel.cancelled() => Err(CoreError::Cancelled),
+                result = discovery::test_provider(&id, provider) => result.map(ConfigReply::ProviderTest),
+            }
+        }
         ConfigAction::SelectModel { cwd, selector } => {
             let config = inner.project_config(Path::new(&cwd))?;
             let model = config.resolve_model(&selector)?;

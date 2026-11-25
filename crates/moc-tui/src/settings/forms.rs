@@ -210,17 +210,23 @@ fn fields_key(
 ) -> bool {
     if code == KeyCode::Esc {
         if !panel.filter.is_empty() {
-            // 如果搜索中光标停在某个字段上，顺带切到该字段所属的选项卡
-            if let Some(RowKind::Field(idx)) = panel.row()
-                && let Some(field) = panel.fields.get(*idx)
-            {
-                let target_tab = super::tab_of(&field.path);
+            // 如果搜索中光标停在某个字段上，顺带切到该字段所属的选项卡与供应商/模型上下文
+            let jump_path = match panel.row() {
+                Some(RowKind::Field(idx)) => panel.fields.get(*idx).map(|f| f.path.clone()),
+                _ => None,
+            };
+            if let Some(path) = &jump_path {
+                let target_tab = super::tab_of(path);
                 if let Some(pos) = TABS.iter().position(|t| *t == target_tab) {
                     panel.tab = pos;
                 }
+                panel.focus_provider_field(path);
             }
             panel.filter.clear();
             panel.rebuild_rows();
+            if let Some(path) = &jump_path {
+                panel.select_path(path);
+            }
             return false;
         }
         // 改动都是即时保存的，直接返回即可。
@@ -337,6 +343,7 @@ fn fields_key(
             )
         }
         KeyCode::Char('r') => reset_field(panel, app, connection),
+        KeyCode::Char('s') if mods == KeyModifiers::NONE => panel.toggle_scope(app, connection),
         KeyCode::Delete => {
             if panel.group().is_some() {
                 delete_group(panel);
@@ -548,6 +555,75 @@ fn apply_edit(
                 Ok(Store::Core)
             })?;
             panel.open_model(provider, id);
+        }
+        EditTarget::CloneProvider(source_id) => {
+            let id = text.trim();
+            anyhow::ensure!(
+                !id.is_empty()
+                    && id
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c)),
+                "{}",
+                t!("tui.err.provider_id_invalid")
+            );
+            anyhow::ensure!(
+                panel.effective["providers"].get(id).is_none(),
+                "{}",
+                t!("tui.err.provider_exists", id = id)
+            );
+            let source = panel
+                .data
+                .as_ref()
+                .and_then(|d| get(&d.document, &["providers".into(), source_id.clone()]))
+                .cloned()
+                .unwrap_or_else(|| panel.effective["providers"][source_id].clone());
+            let new_id = id.to_owned();
+            panel.commit(label, app, connection, |panel| {
+                panel.set_value(&["providers".into(), new_id.clone()], source);
+                Ok(Store::Core)
+            })?;
+            panel.providers.selected = Some(id.to_owned());
+            panel.providers.sidebar = false;
+            panel.rebuild_rows();
+        }
+        EditTarget::CloneModel(provider_id, source_model) => {
+            let id = text.trim();
+            anyhow::ensure!(!id.is_empty(), "{}", t!("tui.err.model_id_empty"));
+            let dst = vec![
+                "providers".into(),
+                provider_id.clone(),
+                "models".into(),
+                id.to_owned(),
+            ];
+            anyhow::ensure!(
+                panel.value(&dst).is_none(),
+                "{}",
+                t!("tui.err.model_exists", id = format!("{provider_id}/{id}"))
+            );
+            let src_path = vec![
+                "providers".into(),
+                provider_id.clone(),
+                "models".into(),
+                source_model.clone(),
+            ];
+            let source = panel
+                .data
+                .as_ref()
+                .and_then(|d| get(&d.document, &src_path))
+                .cloned()
+                .unwrap_or_else(|| panel.value(&src_path).cloned().unwrap_or_else(|| json!({})));
+            panel.commit(label, app, connection, |panel| {
+                panel.set_value(&dst, source);
+                Ok(Store::Core)
+            })?;
+            panel.open_model(provider_id, id);
+        }
+        EditTarget::ModelFilter => {
+            panel.providers.model_filter = text.trim().into();
+            panel.selected = 0;
+            panel.offset = 0;
+            panel.scroll.reveal_selection = true;
+            panel.rebuild_rows();
         }
         EditTarget::Mcp => {
             let name = text.trim().to_owned();

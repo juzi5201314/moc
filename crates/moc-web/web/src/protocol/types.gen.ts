@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 8c057eaabace3afd
+// schema sha256: 451912cc60438970
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -229,6 +229,11 @@ export type ConfigAction =
       provider: unknown;
     }
   | {
+      action: "test_provider";
+      id: string;
+      provider: unknown;
+    }
+  | {
       action: "select_model";
       cwd: string;
       selector: string;
@@ -306,6 +311,10 @@ export type ConfigReply =
   | {
       data: CatalogModel[];
       kind: "models";
+    }
+  | {
+      data: ProviderTestResult;
+      kind: "provider_test";
     }
   | {
       data: MaintenanceReport;
@@ -1910,8 +1919,64 @@ export interface BtwUpdateParams {
  * via the `definition` "CatalogModel".
  */
 export interface CatalogModel {
+  /**
+   * 上游返回或按模型系列推断的上下文窗口 token 数。
+   */
+  context_window?: number | null;
+  /**
+   * 是否支持 Fast Mode。
+   */
+  fast_mode?: boolean | null;
   id: string;
+  /**
+   * 是否为图片生成模型。
+   */
+  image_gen?: boolean | null;
+  /**
+   * 上游返回或推断的输入模态（如 `["text", "image"]`）。
+   */
+  input?: string[] | null;
+  /**
+   * 上游返回或推断的单次最大输出 token 数。
+   */
+  max_output_tokens?: number | null;
   name: string;
+  /**
+   * 上游返回的每百万 token 定价（美元）。
+   */
+  pricing?: ModelPricing | null;
+  /**
+   * 上游返回或推断的推理能力。
+   */
+  reasoning?: boolean | null;
+}
+/**
+ * 每百万 token 定价（美元）。
+ *
+ * `input` / `output` 必填；缓存两项选填，未配置时前端可按全价估算或跳过。
+ * 注意 moc-llm 的 `Usage::input_tokens` 已折入缓存命中部分，费用应按
+ * `input - cached` 计非命中输入、`cached` 按 `cache_read` 单价计。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ModelPricing".
+ */
+export interface ModelPricing {
+  /**
+   * 缓存命中输入，每百万 token；`None` 表示未配置。
+   */
+  cache_read?: number | null;
+  /**
+   * 缓存写入输入，每百万 token；`None` 表示未配置。
+   */
+  cache_write?: number | null;
+  /**
+   * 非缓存输入，每百万 token。
+   */
+  input: number;
+  /**
+   * 输出，每百万 token。
+   */
+  output: number;
 }
 /**
  * Markdown 表格的表头与行。
@@ -2124,34 +2189,6 @@ export interface ModelInfo {
   thinking_levels?: string[] | null;
 }
 /**
- * 每百万 token 定价（美元）。
- *
- * `input` / `output` 必填；缓存两项选填，未配置时前端可按全价估算或跳过。
- * 注意 moc-llm 的 `Usage::input_tokens` 已折入缓存命中部分，费用应按
- * `input - cached` 计非命中输入、`cached` 按 `cache_read` 单价计。
- *
- * This interface was referenced by `ProtocolTypes`'s JSON-Schema
- * via the `definition` "ModelPricing".
- */
-export interface ModelPricing {
-  /**
-   * 缓存命中输入，每百万 token；`None` 表示未配置。
-   */
-  cache_read?: number | null;
-  /**
-   * 缓存写入输入，每百万 token；`None` 表示未配置。
-   */
-  cache_write?: number | null;
-  /**
-   * 非缓存输入，每百万 token。
-   */
-  input: number;
-  /**
-   * 输出，每百万 token。
-   */
-  output: number;
-}
-/**
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
  * via the `definition` "SettingsDocument".
  */
@@ -2170,6 +2207,20 @@ export interface SettingsDocument {
   path: string;
   provider_template: unknown;
   revision: string;
+}
+/**
+ * 供应商连通性测试结果。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ProviderTestResult".
+ */
+export interface ProviderTestResult {
+  endpoint: string;
+  latency_ms: number;
+  message: string;
+  models_count?: number | null;
+  ok: boolean;
+  status?: number | null;
 }
 /**
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema

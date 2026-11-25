@@ -69,6 +69,7 @@ async fn clicking_an_added_model_keeps_the_selection_empty() {
     app.settings = Some(SettingsPanel {
         id: 1,
         cwd: "/tmp".into(),
+        scope: ConfigScope::Global,
         data: None,
         tui: Value::Null,
         effective: serde_json::json!({
@@ -99,6 +100,7 @@ async fn clicking_an_added_model_keeps_the_selection_empty() {
                 rows: vec![CatalogModel {
                     id: "m1".into(),
                     name: "m1".into(),
+                    ..Default::default()
                 }],
                 checked: BTreeSet::new(),
                 query: String::new(),
@@ -106,6 +108,7 @@ async fn clicking_an_added_model_keeps_the_selection_empty() {
                 offset: 0,
                 scroll: Default::default(),
                 error: None,
+                status: None,
                 pending: None,
             }),
             ..Default::default()
@@ -362,6 +365,7 @@ fn server_plugin_fields_survive_rebuild_with_defaults() {
     let mut panel = SettingsPanel {
         id: 1,
         cwd: String::new(),
+        scope: ConfigScope::Global,
         data: Some(SettingsDocument {
             path: String::new(),
             revision: String::new(),
@@ -437,6 +441,7 @@ fn rebuilding_does_not_infer_plugin_field_metadata() {
     let mut panel = SettingsPanel {
         id: 1,
         cwd: String::new(),
+        scope: ConfigScope::Global,
         data: Some(SettingsDocument {
             path: String::new(),
             revision: String::new(),
@@ -524,6 +529,7 @@ fn advanced_group_collapses_by_default_and_expands_on_filter() {
     let mut panel = SettingsPanel {
         id: 1,
         cwd: String::new(),
+        scope: ConfigScope::Global,
         data: Some(SettingsDocument {
             path: String::new(),
             revision: String::new(),

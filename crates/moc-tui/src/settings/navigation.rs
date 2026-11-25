@@ -430,7 +430,7 @@ impl SettingsPanel {
         }
     }
 
-    /// 模型行的摘要：上下文长度、回复上限与思考能力。
+    /// 模型行的摘要：图片模型仅标 Image Gen；普通模型展示上下文、回复上限、思考、视觉与停用态。
     pub(super) fn model_summary(&self, provider: &str, model: &str) -> String {
         let Some(value) = self
             .effective
@@ -442,6 +442,13 @@ impl SettingsPanel {
             return String::new();
         };
         let mut parts = Vec::new();
+        if value.get("enabled").and_then(Value::as_bool) == Some(false) {
+            parts.push(t!("tui.providers.disabled_tag").into_owned());
+        }
+        if value.get("image_gen").and_then(Value::as_bool) == Some(true) {
+            parts.push("Image Gen".into());
+            return parts.join(&t!("tui.nav.sep"));
+        }
         if let Some(window) = value.get("context_window").and_then(Value::as_u64) {
             parts
                 .push(t!("tui.nav.ctx_fmt", v = crate::render::format_tokens(window)).into_owned());
@@ -456,6 +463,20 @@ impl SettingsPanel {
             .unwrap_or(false)
         {
             parts.push(t!("tui.nav.thinking").into_owned());
+        }
+        if value
+            .get("input")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("image")))
+        {
+            parts.push("Image".into());
+        }
+        if value
+            .get("fast_mode")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            parts.push("Fast".into());
         }
         parts.join(&t!("tui.nav.sep"))
     }
@@ -539,6 +560,11 @@ impl SettingsPanel {
         self.data
             .as_ref()
             .is_some_and(|data| get(&data.document, path).is_some())
+    }
+
+    /// 在 Project 作用域下，某路径是否继承自全局配置。
+    pub fn inherited_from_global(&self, path: &[String]) -> bool {
+        self.scope == moc_protocol::ConfigScope::Project && !self.explicit(path)
     }
 
     pub(super) fn select_tab(&mut self, index: usize) {

@@ -956,11 +956,71 @@
     },
     "CatalogModel": {
       "properties": {
+        "context_window": {
+          "description": "上游返回或按模型系列推断的上下文窗口 token 数。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "fast_mode": {
+          "description": "是否支持 Fast Mode。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "id": {
           "type": "string"
         },
+        "image_gen": {
+          "description": "是否为图片生成模型。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "input": {
+          "description": "上游返回或推断的输入模态（如 `[\"text\", \"image\"]`）。",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "max_output_tokens": {
+          "description": "上游返回或推断的单次最大输出 token 数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "name": {
           "type": "string"
+        },
+        "pricing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelPricing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "上游返回的每百万 token 定价（美元）。"
+        },
+        "reasoning": {
+          "description": "上游返回或推断的推理能力。",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1151,6 +1211,26 @@
           "properties": {
             "action": {
               "const": "models",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "provider": true
+          },
+          "required": [
+            "action",
+            "id",
+            "provider"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "测试供应商连通性与鉴权（不要求先保存配置）。",
+          "properties": {
+            "action": {
+              "const": "test_provider",
               "type": "string"
             },
             "id": {
@@ -1359,6 +1439,22 @@
             },
             "kind": {
               "const": "models",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/ProviderTestResult"
+            },
+            "kind": {
+              "const": "provider_test",
               "type": "string"
             }
           },
@@ -4325,6 +4421,49 @@
         "message",
         "finish_reason",
         "usage"
+      ],
+      "type": "object"
+    },
+    "ProviderTestResult": {
+      "description": "供应商连通性测试结果。",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "latency_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "message": {
+          "type": "string"
+        },
+        "models_count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "status": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "ok",
+        "latency_ms",
+        "endpoint",
+        "message"
       ],
       "type": "object"
     },

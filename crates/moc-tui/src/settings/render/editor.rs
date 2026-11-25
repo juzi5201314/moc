@@ -484,10 +484,11 @@ pub(super) fn text_body(editor: &TextEditor, width: usize, rows: usize) -> Popup
     )
 }
 
-/// 单行输入：横向滚动到光标可见；未显示的密钥逐字符打码。
+/// 单行输入：横向滚动到光标可见；普通密钥逐字符打码，但 `env:` / `!` 动态引用明文展示方便核对。
 pub(super) fn edit_line(editor: &TextEditor, width: usize) -> (String, usize) {
     let input = &editor.input;
-    if matches!(editor.kind, FieldKind::Secret) && !editor.reveal {
+    let is_ref = input.text.starts_with("env:") || input.text.starts_with('!');
+    if matches!(editor.kind, FieldKind::Secret) && !editor.reveal && !is_ref {
         let masked = "•".repeat(input.text.chars().count());
         let cursor = input.text[..input.cursor].chars().count() * '•'.len_utf8();
         return tail(&masked, cursor, width);

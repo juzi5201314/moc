@@ -19,6 +19,15 @@ import { type MsgKey, useT } from "@/lib/i18n";
 import { choiceDisplay, choiceValue, formatField, getPath, parseField } from "@/lib/settings-doc";
 import { cn } from "@/lib/utils";
 import type { ConfigField, SettingsDocument } from "@/protocol/types";
+import {
+  ApiKeyInput,
+  EndpointEditor,
+  effortMapKeys,
+  KeyValueEditor,
+  PricingEditor,
+  ThinkingLevelsEditor,
+  TokenCountEditor,
+} from "./provider-widgets";
 import { useSettings, writeField } from "./settings-store";
 
 const INHERIT = "__inherit__";
@@ -127,10 +136,13 @@ function TextEditor({
   placeholder: string;
   onError: (error: string | null) => void;
 }) {
+  const t = useT();
   const [draft, setDraft] = useState(explicitText);
   const [focused, setFocused] = useState(false);
   const multiline =
     field.kind.type === "multiline" || field.kind.type === "object" || field.kind.type === "json";
+  const isBaseUrl =
+    field.path[0] === "providers" && field.path.length === 3 && field.path[2] === "base_url";
 
   useEffect(() => {
     if (!focused) setDraft(explicitText);
@@ -138,6 +150,13 @@ function TextEditor({
 
   const commit = () => {
     if (draft === explicitText) return;
+    if (isBaseUrl) {
+      const trimmed = draft.trim();
+      if (trimmed && !trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+        onError(t("sp.url_scheme_err"));
+        return;
+      }
+    }
     const parsed = parseField(draft, field.kind);
     if (!parsed.ok) {
       onError(parsed.error);
@@ -173,10 +192,32 @@ function TextEditor({
       />
     );
   }
+  if (field.kind.type === "secret") {
+    return (
+      <ApiKeyInput
+        value={draft}
+        placeholder={placeholder}
+        ariaLabel={field.label}
+        onFocus={() => setFocused(true)}
+        onBlur={() => {
+          setFocused(false);
+          commit();
+        }}
+        onChange={setDraft}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") event.currentTarget.blur();
+          if (event.key === "Escape") {
+            setDraft(explicitText);
+            onError(null);
+          }
+        }}
+      />
+    );
+  }
   return (
     <Input
       {...common}
-      type={field.kind.type === "secret" ? "password" : "text"}
+      type="text"
       autoComplete="off"
       spellCheck={false}
       onChange={(event) => setDraft(event.target.value)}
@@ -206,9 +247,65 @@ export function FieldRow({ field, doc }: { field: ConfigField; doc: SettingsDocu
     void writeField(field.path, undefined);
   };
   const kind = field.kind;
+  const leaf = field.path.at(-1);
+  const isModelField =
+    (field.path[0] === "providers" && field.path[2] === "models" && field.path.length === 5) ||
+    (field.path[0] === "defaults" && field.path[1] === "models" && field.path.length === 4);
+  const isProviderEndpoint =
+    field.path[0] === "providers" && field.path.length === 3 && leaf === "endpoint";
+  const isHeadersKv = kind.type === "object" && leaf === "headers";
+  const isEffortMap = kind.type === "object" && leaf === "effort_map";
+  const isTokenCount = isModelField && (leaf === "context_window" || leaf === "max_output_tokens");
+  const isPricing = isModelField && leaf === "pricing";
+  const isThinkingLevels = isModelField && leaf === "thinking_levels";
 
   let editor: ReactNode;
-  if (kind.type === "bool") {
+  let wide = kind.type === "multiline" || kind.type === "object" || kind.type === "json";
+
+  if (isPricing) {
+    wide = true;
+    editor = (
+      <PricingEditor path={field.path} explicit={explicit} fallback={fallback} onError={setError} />
+    );
+  } else if (isThinkingLevels) {
+    wide = true;
+    editor = (
+      <ThinkingLevelsEditor
+        path={field.path}
+        explicit={explicit}
+        fallback={fallback}
+        onError={setError}
+      />
+    );
+  } else if (isProviderEndpoint) {
+    wide = false;
+    editor = (
+      <EndpointEditor
+        path={field.path}
+        explicit={explicit}
+        fallback={fallback}
+        onError={setError}
+      />
+    );
+  } else if (isHeadersKv) {
+    wide = true;
+    editor = <KeyValueEditor path={field.path} explicit={explicit} fallback={fallback} />;
+  } else if (isEffortMap) {
+    wide = true;
+    editor = (
+      <KeyValueEditor
+        path={field.path}
+        explicit={explicit}
+        fallback={fallback}
+        fixedKeys={effortMapKeys(doc, field.path)}
+        allowCustom={false}
+      />
+    );
+  } else if (isTokenCount) {
+    editor = (
+      <TokenCountEditor field={field} explicit={explicit} fallback={fallback} onError={setError} />
+    );
+  } else if (kind.type === "bool") {
     editor = (
       <div className="flex justify-end">
         <Switch
@@ -296,7 +393,7 @@ export function FieldRow({ field, doc }: { field: ConfigField; doc: SettingsDocu
       title={field.path.join(".")}
       overridden={overridden}
       onReset={reset}
-      wide={kind.type === "multiline" || kind.type === "object" || kind.type === "json"}
+      wide={wide}
       error={error}
     >
       {editor}
@@ -362,11 +459,29 @@ const GROUP_TITLES: Record<string, MsgKey> = {
   "extra_body.diagnostics": "sg.eb_diagnostics",
 };
 
-/** 字段归组：去掉末段后的路径；同组相邻排列。 */
-function groupKey(path: string[], strip: number): string {
+/** 字段归组：保留路径分段，避免含点号的 model ID（如 `gpt-5.4`）被误切。 */
+function groupSegments(path: string[], strip: number): string[] {
   const parent = path.slice(strip, -1);
   if (parent[0] === "compat" && ["extra_body", "headers"].includes(parent[1])) parent.shift();
-  return parent.join(".");
+  return parent;
+}
+
+function formatGroupTitle(segments: string[], t: ReturnType<typeof useT>): string {
+  const dotKey = segments.join(".");
+  if (GROUP_TITLES[dotKey]) return t(GROUP_TITLES[dotKey]);
+  if (segments[0] === "providers" && segments[2] === "models" && segments.length >= 4) {
+    const rest = segments.slice(4);
+    return rest.length > 0
+      ? `${segments[1]} / ${segments[3]} · ${rest.join(".")}`
+      : `${segments[1]} / ${segments[3]}`;
+  }
+  if (segments[0] === "defaults" && segments[1] === "models" && segments.length >= 3) {
+    const rest = segments.slice(3);
+    return rest.length > 0
+      ? `defaults / ${segments[2]} · ${rest.join(".")}`
+      : `defaults / ${segments[2]}`;
+  }
+  return segments.at(-1) ?? "";
 }
 
 export function FieldList({
@@ -391,12 +506,13 @@ export function FieldList({
   const visible = advanced ? fields : basic;
 
   const groups = useMemo(() => {
-    const result: { key: string; fields: ConfigField[] }[] = [];
+    const result: { key: string; segments: string[]; fields: ConfigField[] }[] = [];
     for (const field of visible) {
-      const key = groupKey(field.path, strip);
+      const segments = groupSegments(field.path, strip);
+      const key = segments.join("\0");
       const group = result.find((item) => item.key === key);
       if (group) group.fields.push(field);
-      else result.push({ key, fields: [field] });
+      else result.push({ key, segments, fields: [field] });
     }
     return result;
   }, [visible, strip]);
@@ -405,14 +521,14 @@ export function FieldList({
     <div className="space-y-5">
       {groups.map((group) => (
         <section key={group.key || "_"}>
-          {showGroups && groups.length > 1 && group.key && (
+          {showGroups && groups.length > 1 && group.segments.length > 0 && (
             <h3 className="mb-1 text-xs font-medium text-text-tertiary">
-              {GROUP_TITLES[group.key] ? t(GROUP_TITLES[group.key]) : group.key.split(".").at(-1)}
+              {formatGroupTitle(group.segments, t)}
             </h3>
           )}
           <div className="divide-y divide-border-subtle rounded-xl bg-card px-4 ring-1 ring-inset ring-border-subtle">
             {group.fields.map((field) => (
-              <FieldRow key={field.path.join(".")} field={field} doc={doc} />
+              <FieldRow key={field.path.join("\0")} field={field} doc={doc} />
             ))}
           </div>
         </section>

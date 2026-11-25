@@ -12,10 +12,11 @@ const Toaster = ({ theme = "system", ...props }: ToasterProps) => {
   return (
     <Sonner
       theme={theme}
-      position="top-center"
-      offset={{ top: 56 }}
-      mobileOffset={{ top: 48, left: 12, right: 12 }}
-      className="toaster group"
+      position="bottom-right"
+      offset={{ bottom: 16, right: 16 }}
+      mobileOffset={{ bottom: 12, left: 12, right: 12 }}
+      className="toaster group pointer-events-auto"
+      toastOptions={{ className: "pointer-events-auto" }}
       icons={{
         success: <CircleCheckIcon className="size-4" />,
         info: <InfoIcon className="size-4" />,

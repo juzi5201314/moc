@@ -1,6 +1,9 @@
-//! 供应商与模型工作区：显式供应商上下文、连接表单与页内模型发现。
+//! 供应商与模型工作区：侧栏实时预览、子分区（Models / Connection / Params）、
+//! 模型钻取编辑、按需添加请求参数、预设新建、连通性测试、模型发现与批量管理。
 
 use super::*;
+use moc_core::config::presets::{PROVIDER_PRESETS, model_entry_from_catalog};
+use moc_protocol::ProviderTestResult;
 
 #[cfg(test)]
 mod tests;
@@ -15,44 +18,108 @@ fn request_parameter(field: &ConfigField) -> bool {
         .is_some_and(|index| index + 1 < field.path.len())
 }
 
+fn is_raw_param_container(field: &ConfigField) -> bool {
+    matches!(
+        field.path.as_slice(),
+        [p, _, k] if p == "providers" && matches!(k.as_str(), "extra_body" | "headers")
+    ) || matches!(
+        field.path.as_slice(),
+        [p, _, m, _, c, k]
+            if p == "providers"
+                && m == "models"
+                && c == "compat"
+                && matches!(k.as_str(), "extra_body" | "headers")
+    )
+}
+
 fn is_provider_connection_field(id: &str, field: &ConfigField) -> bool {
     field.path.first().is_some_and(|p| p == "providers")
         && field.path.get(1).is_some_and(|p| p == id)
         && field.path.get(2).is_some_and(|p| p != "models")
 }
 
-fn parameter_title(path: &[String]) -> String {
-    match path.last().map_or("", String::as_str) {
-        "headers" => t!("tui.param.headers"),
-        "extra_body" => t!("tui.param.extra_body"),
-        "reasoning" => t!("tui.param.reasoning"),
-        "thinking" => t!("tui.param.thinking"),
-        "text" => t!("tui.param.text"),
-        "format" | "json_schema" => t!("tui.param.format"),
-        "response_format" => t!("tui.param.response_format"),
-        "output_config" => t!("tui.param.output_config"),
-        "metadata" => t!("tui.param.metadata"),
-        "prediction" => t!("tui.param.prediction"),
-        "prompt" => t!("tui.param.prompt"),
-        "prompt_cache_options" => t!("tui.param.prompt_cache_options"),
-        "cache_control" => t!("tui.param.cache_control"),
-        "stream_options" => t!("tui.param.stream_options"),
-        "tool_choice" => t!("tui.param.tool_choice"),
-        "moderation" => t!("tui.param.moderation"),
-        "input" => t!("tui.param.input"),
-        "output" => t!("tui.param.output"),
-        "image" => t!("tui.param.image"),
-        "access_programs" => t!("tui.param.access_programs"),
-        "diagnostics" => t!("tui.param.diagnostics"),
-        name => return name.to_owned(),
-    }
-    .into_owned()
-}
 pub const APIS: [(&str, &str); 3] = [
     ("openai_chat", "OpenAI Chat"),
     ("openai_responses", "OpenAI Responses"),
     ("anthropic_messages", "Anthropic Messages"),
 ];
+
+pub fn api_short_label(api: &str) -> &'static str {
+    match api {
+        "openai_chat" => "chat",
+        "openai_responses" => "resp",
+        "anthropic_messages" => "anth",
+        _ => "",
+    }
+}
+
+/// 供应商详情子页签。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProviderSubTab {
+    #[default]
+    Models,
+    Connection,
+    Params,
+}
+
+impl ProviderSubTab {
+    pub const ALL: [Self; 3] = [Self::Models, Self::Connection, Self::Params];
+
+    pub fn cycle(self, reverse: bool) -> Self {
+        let idx = Self::ALL.iter().position(|t| *t == self).unwrap_or(0);
+        if reverse {
+            Self::ALL[(idx + Self::ALL.len() - 1) % Self::ALL.len()]
+        } else {
+            Self::ALL[(idx + 1) % Self::ALL.len()]
+        }
+    }
+}
+
+/// 模型详情子页签。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModelSubTab {
+    #[default]
+    General,
+    Compat,
+    Params,
+}
+
+impl ModelSubTab {
+    pub const ALL: [Self; 3] = [Self::General, Self::Compat, Self::Params];
+
+    pub fn cycle(self, reverse: bool) -> Self {
+        let idx = Self::ALL.iter().position(|t| *t == self).unwrap_or(0);
+        if reverse {
+            Self::ALL[(idx + Self::ALL.len() - 1) % Self::ALL.len()]
+        } else {
+            Self::ALL[(idx + 1) % Self::ALL.len()]
+        }
+    }
+}
+
+/// 异步连通性测试状态。
+pub struct TestState {
+    pub generation: u64,
+    pub pending: Option<tokio::task::AbortHandle>,
+    pub result: Option<ProviderTestResult>,
+}
+
+impl Drop for TestState {
+    fn drop(&mut self) {
+        if let Some(task) = self.pending.take() {
+            task.abort();
+        }
+    }
+}
+
+/// 参数页按需添加 API 请求参数的搜索弹窗。
+pub struct ParamPicker {
+    pub indices: Vec<usize>,
+    pub query: String,
+    pub cursor: usize,
+    pub offset: usize,
+    pub scroll: ModelScroll,
+}
 
 #[derive(Default)]
 pub struct Providers {
@@ -62,18 +129,32 @@ pub struct Providers {
     pub offset: usize,
     /// 侧栏的滚动约束；真实可见行数由绘制层回写。
     pub scroll: ModelScroll,
-    pub more: bool,
+    pub subtab: ProviderSubTab,
+    /// 钻取编辑中的模型 ID；`None` 时展示供应商详情。
+    pub editing_model: Option<String>,
+    pub model_subtab: ModelSubTab,
+    /// Models 子页的模型 ID 过滤词。
+    pub model_filter: String,
+    /// Models 子页中勾选的待批量操作模型 ID。
+    pub batch_models: BTreeSet<String>,
+    /// 用户通过「+ Add parameter」手动展开的参数路径键（`path.join("/")`）。
+    pub pinned_params: BTreeSet<String>,
     pub draft: Option<ProviderDraft>,
     pub discovery: Option<Discovery>,
+    pub param_picker: Option<ParamPicker>,
+    pub test: Option<TestState>,
     pub(super) generation: u64,
 }
 
+/// 新建供应商表单：预设、ID、API、Base URL、API Key，加测试 / 添加并拉取 / 仅添加三个动作。
 pub struct ProviderDraft {
+    pub preset: usize,
     pub id: TextEditor,
     pub api: usize,
     pub url: TextEditor,
     pub key: TextEditor,
-    /// 四个字段与两个提交按钮，共六个控件。
+    pub azure_version: Option<String>,
+    /// 8 个控件：0 Preset, 1 ID, 2 API, 3 Base URL, 4 API Key, 5 Test, 6 Add & Fetch, 7 Add。
     pub focus: usize,
     pub offset: usize,
     /// 表单的滚动约束；真实可见行数由绘制层回写。
@@ -82,13 +163,17 @@ pub struct ProviderDraft {
     pub discover: bool,
 }
 
+pub const DRAFT_CONTROLS: usize = 8;
+
 impl Default for ProviderDraft {
     fn default() -> Self {
         Self {
+            preset: 0,
             id: TextEditor::new(FieldKind::Text, String::new()),
             api: 0,
             url: TextEditor::new(FieldKind::Text, String::new()),
             key: TextEditor::new(FieldKind::Secret, String::new()),
+            azure_version: None,
             focus: 0,
             offset: 0,
             scroll: Default::default(),
@@ -101,14 +186,57 @@ impl Default for ProviderDraft {
 impl ProviderDraft {
     pub fn input(&mut self) -> Option<&mut TextEditor> {
         match self.focus {
-            0 => Some(&mut self.id),
-            2 => Some(&mut self.url),
-            3 => Some(&mut self.key),
+            1 => Some(&mut self.id),
+            3 => Some(&mut self.url),
+            4 => Some(&mut self.key),
             _ => None,
         }
     }
 
-    fn value(&self, panel: &SettingsPanel) -> anyhow::Result<(String, Value)> {
+    /// 切换预设并自动填入推荐的 ID、协议、Base URL 与 API Key 环境变量提示。
+    pub fn apply_preset(&mut self, index: usize, existing: &[String]) {
+        let index = index % PROVIDER_PRESETS.len();
+        self.preset = index;
+        let preset = PROVIDER_PRESETS[index];
+        self.azure_version = preset.azure_api_version.map(str::to_owned);
+        if preset.key == "custom" {
+            return;
+        }
+        let suggested = if existing.iter().any(|id| id == preset.id) {
+            next_copy_id(preset.id, existing)
+        } else {
+            preset.id.to_owned()
+        };
+        self.id.input = PromptState::from_text(suggested);
+        if let Some(pos) = APIS.iter().position(|(k, _)| *k == preset.api) {
+            self.api = pos;
+        }
+        self.url.input = PromptState::from_text(preset.base_url.to_owned());
+        self.key.input = PromptState::from_text(preset.api_key_hint.to_owned());
+    }
+
+    pub fn preview_payload(&self) -> anyhow::Result<(String, Value)> {
+        let url = self.url.input.text.trim();
+        anyhow::ensure!(!url.is_empty(), "{}", t!("tui.err.url_required"));
+        anyhow::ensure!(
+            url.starts_with("http://") || url.starts_with("https://"),
+            "{}",
+            t!("tui.err.url_scheme")
+        );
+        let id = self.id.input.text.trim();
+        let mut obj = json!({
+            "api": APIS[self.api].0,
+            "base_url": url,
+            "api_key": self.key.input.text,
+            "models": {}
+        });
+        if let Some(version) = &self.azure_version {
+            obj["endpoint"] = json!({ "Azure": { "api_version": version } });
+        }
+        Ok((if id.is_empty() { "preview".into() } else { id.into() }, obj))
+    }
+
+    pub fn value(&self, panel: &SettingsPanel) -> anyhow::Result<(String, Value)> {
         let id = self.id.input.text.trim();
         anyhow::ensure!(
             !id.is_empty()
@@ -123,15 +251,8 @@ impl ProviderDraft {
             "{}",
             t!("tui.err.provider_exists", id = id)
         );
-        let url = self.url.input.text.trim();
-        anyhow::ensure!(!url.is_empty(), "{}", t!("tui.err.url_required"));
-        Ok((
-            id.into(),
-            json!({
-                "api": APIS[self.api].0, "base_url": url, "api_key": self.key.input.text,
-                "models": {}
-            }),
-        ))
+        let (_, payload) = self.preview_payload()?;
+        Ok((id.into(), payload))
     }
 }
 
@@ -144,6 +265,8 @@ pub struct Discovery {
     pub offset: usize,
     pub scroll: ModelScroll,
     pub error: Option<String>,
+    /// 添加完一批模型后保留弹窗并展示反馈，方便继续搜索添加。
+    pub status: Option<String>,
     pub pending: Option<tokio::task::AbortHandle>,
 }
 
@@ -158,10 +281,32 @@ impl Drop for Discovery {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderAction {
     New,
-    More,
+    Test,
     Fetch,
     Manual,
+    FilterModels,
+    AddParam,
+    BatchReasoning,
+    BatchVision,
+    BatchToggleEnabled,
+    BatchDelete,
+    BatchClear,
+    Clone,
     Remove,
+}
+
+pub fn next_copy_id(base: &str, existing: &[String]) -> String {
+    let first = format!("{base}-copy");
+    if !existing.iter().any(|item| item == &first) {
+        return first;
+    }
+    for n in 2..1000 {
+        let candidate = format!("{first}-{n}");
+        if !existing.iter().any(|item| item == &candidate) {
+            return candidate;
+        }
+    }
+    format!("{first}-new")
 }
 
 impl SettingsPanel {
@@ -170,11 +315,24 @@ impl SettingsPanel {
     }
 
     pub fn provider_ids(&self) -> Vec<String> {
-        self.effective
+        let mut ids: Vec<String> = self
+            .effective
             .get("providers")
             .and_then(Value::as_object)
             .map(|values| values.keys().cloned().collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        ids.sort();
+        ids
+    }
+
+    pub fn provider_model_ids(&self, id: &str) -> Vec<String> {
+        let mut ids: Vec<String> = self.effective["providers"][id]
+            .get("models")
+            .and_then(Value::as_object)
+            .map(|models| models.keys().cloned().collect())
+            .unwrap_or_default();
+        ids.sort();
+        ids
     }
 
     pub fn sync_provider(&mut self) {
@@ -187,6 +345,19 @@ impl SettingsPanel {
         {
             self.providers.selected = ids.first().cloned();
             self.providers.discovery = None;
+            self.providers.param_picker = None;
+            self.providers.editing_model = None;
+            self.providers.test = None;
+            self.providers.batch_models.clear();
+            self.providers.model_filter.clear();
+        }
+        if let (Some(pid), Some(mid)) = (
+            self.providers.selected.as_deref(),
+            self.providers.editing_model.as_deref(),
+        ) && self.effective["providers"][pid]["models"].get(mid).is_none()
+        {
+            self.providers.editing_model = None;
+            self.providers.param_picker = None;
         }
         self.providers.cursor = if self.providers.draft.is_some() {
             ids.len()
@@ -198,6 +369,30 @@ impl SettingsPanel {
                 .unwrap_or(ids.len())
         };
         self.providers.scroll.reveal_selection = true;
+    }
+
+    /// 侧栏移动光标时实时预览对应供应商（不离开侧栏焦点），停在末行 `+ Add provider` 时不破坏当前详情。
+    pub fn preview_provider(&mut self, index: usize) {
+        let ids = self.provider_ids();
+        self.providers.cursor = index.min(ids.len());
+        self.providers.scroll.reveal_selection = true;
+        if let Some(id) = ids.get(index)
+            && self.providers.selected.as_ref() != Some(id)
+        {
+            self.providers.selected = Some(id.clone());
+            self.providers.draft = None;
+            self.providers.discovery = None;
+            self.providers.param_picker = None;
+            self.providers.editing_model = None;
+            self.providers.test = None;
+            self.providers.batch_models.clear();
+            self.providers.model_filter.clear();
+            self.selected = 0;
+            self.offset = 0;
+            self.scroll.reveal_selection = true;
+            self.error = None;
+            self.rebuild_rows();
+        }
     }
 
     pub fn choose_provider(&mut self, index: usize) {
@@ -213,8 +408,14 @@ impl SettingsPanel {
         self.providers.cursor = index.min(ids.len());
         self.providers.scroll.reveal_selection = true;
         if let Some(id) = ids.get(index) {
-            if self.providers.selected.as_ref() != Some(id) {
+            let changed = self.providers.selected.as_ref() != Some(id);
+            if changed {
                 self.providers.discovery = None;
+                self.providers.param_picker = None;
+                self.providers.editing_model = None;
+                self.providers.test = None;
+                self.providers.batch_models.clear();
+                self.providers.model_filter.clear();
             }
             self.providers.selected = Some(id.clone());
             self.providers.draft = None;
@@ -233,172 +434,331 @@ impl SettingsPanel {
             .draft
             .get_or_insert_with(ProviderDraft::default);
         self.providers.sidebar = false;
+        self.providers.editing_model = None;
+        self.providers.param_picker = None;
+        self.providers.test = None;
         self.providers.cursor = self.provider_ids().len();
         self.providers.scroll.reveal_selection = true;
         self.edit = None;
         self.error = None;
     }
 
-    /// 所有供应商（包括零模型）来自配置对象，详情字段只取明确选中的供应商。
+    pub fn set_provider_subtab(&mut self, subtab: ProviderSubTab) {
+        if self.providers.subtab != subtab {
+            self.providers.subtab = subtab;
+            self.providers.param_picker = None;
+            self.selected = 0;
+            self.offset = 0;
+            self.scroll.reveal_selection = true;
+            self.rebuild_rows();
+        }
+    }
+
+    pub fn set_model_subtab(&mut self, subtab: ModelSubTab) {
+        if self.providers.model_subtab != subtab {
+            self.providers.model_subtab = subtab;
+            self.providers.param_picker = None;
+            self.selected = 0;
+            self.offset = 0;
+            self.scroll.reveal_selection = true;
+            self.rebuild_rows();
+        }
+    }
+
+    pub fn open_model(&mut self, provider: &str, model: &str) {
+        self.providers.selected = Some(provider.to_owned());
+        self.providers.editing_model = Some(model.to_owned());
+        self.providers.model_subtab = ModelSubTab::General;
+        self.providers.sidebar = false;
+        self.providers.param_picker = None;
+        self.selected = 0;
+        self.offset = 0;
+        self.scroll.reveal_selection = true;
+        self.rebuild_rows();
+    }
+
+    pub fn close_model(&mut self) {
+        let model = self.providers.editing_model.take();
+        self.providers.param_picker = None;
+        self.providers.subtab = ProviderSubTab::Models;
+        self.rebuild_rows();
+        if let (Some(pid), Some(mid)) = (self.providers.selected.clone(), model) {
+            self.select_path(&["providers".into(), pid, "models".into(), mid]);
+        }
+    }
+
+    /// 搜索结果退出时，将选中字段对应的供应商与模型上下文准确恢复到 Providers 视图。
+    pub fn focus_provider_field(&mut self, path: &[String]) {
+        if path.first().map(String::as_str) != Some("providers") {
+            return;
+        }
+        let Some(pid) = path.get(1) else {
+            return;
+        };
+        self.providers.selected = Some(pid.clone());
+        self.providers.sidebar = false;
+        if path.get(2).map(String::as_str) == Some("models")
+            && let Some(mid) = path.get(3)
+        {
+            self.providers.editing_model = Some(mid.clone());
+            self.providers.model_subtab = if path
+                .iter()
+                .any(|part| matches!(part.as_str(), "extra_body" | "headers"))
+            {
+                self.providers.pinned_params.insert(path.join("/"));
+                ModelSubTab::Params
+            } else if path.get(4).map(String::as_str) == Some("compat")
+                || path.get(4).map(String::as_str) == Some("max_request_bytes")
+            {
+                ModelSubTab::Compat
+            } else {
+                ModelSubTab::General
+            };
+        } else {
+            self.providers.editing_model = None;
+            self.providers.subtab = if path
+                .iter()
+                .any(|part| matches!(part.as_str(), "extra_body" | "headers"))
+            {
+                self.providers.pinned_params.insert(path.join("/"));
+                ProviderSubTab::Params
+            } else {
+                ProviderSubTab::Connection
+            };
+        }
+    }
+
+    fn is_param_active(&self, field: &ConfigField) -> bool {
+        let key = field.path.join("/");
+        if self.providers.pinned_params.contains(&key) {
+            return true;
+        }
+        if self.explicit(&field.path) {
+            return true;
+        }
+        if let Some(data) = &self.data
+            && get(&data.inherited, &field.path).is_some()
+        {
+            return true;
+        }
+        if let Some(compat_idx) = field.path.iter().position(|part| part == "compat") {
+            let mut provider_path = field.path[..2].to_vec();
+            provider_path.extend_from_slice(&field.path[compat_idx + 1..]);
+            if get(&self.effective, &provider_path).is_some() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 当前供应商或模型下的全部可用请求参数（供 Params 子页计数与弹窗搜索）。
+    pub fn available_param_indices(&self) -> Vec<usize> {
+        let Some(pid) = &self.providers.selected else {
+            return Vec::new();
+        };
+        if let Some(mid) = &self.providers.editing_model {
+            let prefix = ["providers", pid.as_str(), "models", mid.as_str()];
+            self.fields
+                .iter()
+                .enumerate()
+                .filter(|(_, field)| {
+                    field.path.len() > 4
+                        && prefix
+                            .iter()
+                            .enumerate()
+                            .all(|(i, seg)| field.path[i] == *seg)
+                        && request_parameter(field)
+                })
+                .map(|(i, _)| i)
+                .collect()
+        } else {
+            self.fields
+                .iter()
+                .enumerate()
+                .filter(|(_, field)| {
+                    is_provider_connection_field(pid, field) && request_parameter(field)
+                })
+                .map(|(i, _)| i)
+                .collect()
+        }
+    }
+
+    pub fn configured_param_count(&self) -> usize {
+        self.available_param_indices()
+            .into_iter()
+            .filter(|&idx| self.is_param_active(&self.fields[idx]))
+            .count()
+    }
+
+    /// 构造当前视图的行集：模型钻取视图或供应商三子页（Models / Connection / Params）。
     pub fn provider_rows(&self) -> Vec<Row> {
         let mut rows = Vec::new();
         let Some(id) = &self.providers.selected else {
             return rows;
         };
-        let action = |rows: &mut Vec<Row>, action| {
+        let push_action = |rows: &mut Vec<Row>, action| {
             rows.push(Row {
                 depth: 0,
                 kind: RowKind::Action(action),
-            })
+            });
         };
-        let mut secondary = Vec::new();
-        let mut provider_params = Vec::new();
-        for (index, field) in self.fields.iter().enumerate() {
-            if is_provider_connection_field(id, field) {
-                if request_parameter(field) {
-                    provider_params.push(index);
-                } else if matches!(field.path[2].as_str(), "api" | "base_url" | "api_key") {
-                    rows.push(Row {
-                        depth: 0,
-                        kind: RowKind::Field(index),
-                    });
-                } else {
-                    secondary.push(index);
-                }
-            }
-        }
-        action(&mut rows, ProviderAction::More);
-        if self.providers.more {
-            for index in secondary {
-                rows.push(Row {
-                    depth: 1,
-                    kind: RowKind::Field(index),
-                });
-            }
-            self.parameter_rows(&mut rows, provider_params, 1);
-        }
-        action(&mut rows, ProviderAction::Fetch);
-        action(&mut rows, ProviderAction::Manual);
-        if let Some(models) = self.effective["providers"][id]
-            .get("models")
-            .and_then(Value::as_object)
-        {
-            for model in models.keys() {
-                let path = vec![
-                    "providers".into(),
-                    id.clone(),
-                    "models".into(),
-                    model.clone(),
-                ];
-                let key = format!("providers/{id}/models/{model}");
-                let expanded = self.is_expanded(&key, 1);
-                rows.push(Row {
-                    depth: 1,
-                    kind: RowKind::Group(Group {
-                        key: key.clone(),
-                        title: model.clone(),
-                        detail: self.model_summary(id, model),
-                        grouping: path.clone(),
-                        path: Some(path.clone()),
-                    }),
-                });
-                if expanded {
-                    let mut adv_fields = Vec::new();
-                    let mut adv_params = Vec::new();
+
+        if let Some(model) = &self.providers.editing_model {
+            let prefix = vec![
+                "providers".into(),
+                id.clone(),
+                "models".into(),
+                model.clone(),
+            ];
+            match self.providers.model_subtab {
+                ModelSubTab::General => {
                     for (index, field) in self.fields.iter().enumerate() {
-                        if !field.path.starts_with(&path) {
+                        if !field.path.starts_with(&prefix) {
                             continue;
                         }
-                        if request_parameter(field) {
-                            adv_params.push(index);
-                        } else if field.advanced {
-                            adv_fields.push(index);
-                        } else {
+                        if field.path.get(4).map(String::as_str) == Some("compat") || field.advanced
+                        {
+                            continue;
+                        }
+                        rows.push(Row {
+                            depth: 0,
+                            kind: RowKind::Field(index),
+                        });
+                    }
+                }
+                ModelSubTab::Compat => {
+                    for (index, field) in self.fields.iter().enumerate() {
+                        if !field.path.starts_with(&prefix) {
+                            continue;
+                        }
+                        if request_parameter(field) || is_raw_param_container(field) {
+                            continue;
+                        }
+                        if field.path.get(4).map(String::as_str) == Some("compat") || field.advanced
+                        {
                             rows.push(Row {
-                                depth: 2,
+                                depth: 0,
                                 kind: RowKind::Field(index),
                             });
                         }
                     }
-                    let adv_count = adv_fields.len() + adv_params.len();
-                    if adv_count > 0 {
-                        let adv_key = format!("{key}/__advanced");
-                        let mut adv_grouping = path.clone();
-                        adv_grouping.push("__advanced".into());
-                        let adv_expanded = self.is_expanded(&adv_key, 2);
-                        rows.push(Row {
-                            depth: 2,
-                            kind: RowKind::Group(Group {
-                                key: adv_key,
-                                title: t!("tui.settings.advanced_title").into_owned(),
-                                detail: t!("tui.settings.item_count", count = adv_count)
-                                    .into_owned(),
-                                grouping: adv_grouping,
-                                path: None,
-                            }),
-                        });
-                        if adv_expanded {
-                            for index in adv_fields {
-                                rows.push(Row {
-                                    depth: 3,
-                                    kind: RowKind::Field(index),
-                                });
-                            }
-                            self.parameter_rows(&mut rows, adv_params, 3);
+                }
+                ModelSubTab::Params => {
+                    push_action(&mut rows, ProviderAction::AddParam);
+                    for (index, field) in self.fields.iter().enumerate() {
+                        if !field.path.starts_with(&prefix) {
+                            continue;
                         }
+                        if request_parameter(field) && self.is_param_active(field) {
+                            rows.push(Row {
+                                depth: 0,
+                                kind: RowKind::Field(index),
+                            });
+                        }
+                    }
+                    for (index, field) in self.fields.iter().enumerate() {
+                        if field.path.starts_with(&prefix) && is_raw_param_container(field) {
+                            rows.push(Row {
+                                depth: 0,
+                                kind: RowKind::Field(index),
+                            });
+                        }
+                    }
+                }
+            }
+            return rows;
+        }
+
+        match self.providers.subtab {
+            ProviderSubTab::Models => {
+                push_action(&mut rows, ProviderAction::Fetch);
+                push_action(&mut rows, ProviderAction::Manual);
+                let all_models = self.provider_model_ids(id);
+                if !all_models.is_empty() {
+                    push_action(&mut rows, ProviderAction::FilterModels);
+                }
+                if !self.providers.batch_models.is_empty() {
+                    push_action(&mut rows, ProviderAction::BatchReasoning);
+                    push_action(&mut rows, ProviderAction::BatchVision);
+                    push_action(&mut rows, ProviderAction::BatchToggleEnabled);
+                    push_action(&mut rows, ProviderAction::BatchDelete);
+                    push_action(&mut rows, ProviderAction::BatchClear);
+                }
+                let filter = self.providers.model_filter.trim().to_lowercase();
+                for model in all_models {
+                    if !filter.is_empty() && !model.to_lowercase().contains(&filter) {
+                        continue;
+                    }
+                    let path = vec![
+                        "providers".into(),
+                        id.clone(),
+                        "models".into(),
+                        model.clone(),
+                    ];
+                    let key = format!("providers/{id}/models/{model}");
+                    let mut detail = self.model_summary(id, &model);
+                    if self.inherited_from_global(&path) {
+                        if !detail.is_empty() {
+                            detail.push_str(" · ");
+                        }
+                        detail.push_str("[Global]");
+                    }
+                    let title = if self.providers.batch_models.contains(&model) {
+                        format!("☑ {model}")
+                    } else {
+                        model.clone()
+                    };
+                    rows.push(Row {
+                        depth: 0,
+                        kind: RowKind::Group(Group {
+                            key,
+                            title,
+                            detail,
+                            grouping: path.clone(),
+                            path: Some(path),
+                        }),
+                    });
+                }
+            }
+            ProviderSubTab::Connection => {
+                push_action(&mut rows, ProviderAction::Test);
+                for (index, field) in self.fields.iter().enumerate() {
+                    if !is_provider_connection_field(id, field) {
+                        continue;
+                    }
+                    if request_parameter(field) || is_raw_param_container(field) {
+                        continue;
+                    }
+                    rows.push(Row {
+                        depth: 0,
+                        kind: RowKind::Field(index),
+                    });
+                }
+            }
+            ProviderSubTab::Params => {
+                push_action(&mut rows, ProviderAction::AddParam);
+                for (index, field) in self.fields.iter().enumerate() {
+                    if !is_provider_connection_field(id, field) {
+                        continue;
+                    }
+                    if request_parameter(field) && self.is_param_active(field) {
+                        rows.push(Row {
+                            depth: 0,
+                            kind: RowKind::Field(index),
+                        });
+                    }
+                }
+                for (index, field) in self.fields.iter().enumerate() {
+                    if is_provider_connection_field(id, field) && is_raw_param_container(field) {
+                        rows.push(Row {
+                            depth: 0,
+                            kind: RowKind::Field(index),
+                        });
                     }
                 }
             }
         }
         rows
-    }
-
-    pub(super) fn provider_more_count(&self) -> usize {
-        let Some(id) = &self.providers.selected else {
-            return 0;
-        };
-        self.fields
-            .iter()
-            .filter(|field| {
-                is_provider_connection_field(id, field)
-                    && (request_parameter(field)
-                        || !matches!(field.path[2].as_str(), "api" | "base_url" | "api_key"))
-            })
-            .count()
-    }
-
-    /// 请求参数按原字段的父路径归组；与连接、高级协议兼容选项分开。
-    fn parameter_rows(&self, rows: &mut Vec<Row>, indices: Vec<usize>, depth: u8) {
-        let mut groups: Vec<(Vec<String>, Vec<usize>)> = Vec::new();
-        for index in indices {
-            let path = &self.fields[index].path;
-            let parent = &path[..path.len() - 1];
-            if let Some((_, indices)) = groups.iter_mut().find(|(path, _)| path == parent) {
-                indices.push(index);
-            } else {
-                groups.push((parent.to_vec(), vec![index]));
-            }
-        }
-        for (path, indices) in groups {
-            let key = path.join("/");
-            let expanded = self.is_expanded(&key, depth as usize);
-            rows.push(Row {
-                depth,
-                kind: RowKind::Group(Group {
-                    key,
-                    title: parameter_title(&path),
-                    detail: t!("tui.settings.item_count", count = indices.len()).into_owned(),
-                    grouping: path,
-                    path: None,
-                }),
-            });
-            if expanded {
-                rows.extend(indices.into_iter().map(|index| Row {
-                    depth: depth + 1,
-                    kind: RowKind::Field(index),
-                }));
-            }
-        }
     }
 
     pub fn visible_candidates(&self) -> Vec<usize> {
@@ -415,6 +775,24 @@ impl SettingsPanel {
                     || model.name.to_lowercase().contains(&query)
             })
             .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub fn visible_param_picks(&self) -> Vec<usize> {
+        let Some(picker) = &self.providers.param_picker else {
+            return Vec::new();
+        };
+        let query = picker.query.trim().to_lowercase();
+        picker
+            .indices
+            .iter()
+            .copied()
+            .filter(|&idx| {
+                let field = &self.fields[idx];
+                query.is_empty()
+                    || field.label.to_lowercase().contains(&query)
+                    || field.description.to_lowercase().contains(&query)
+            })
             .collect()
     }
 
@@ -435,11 +813,10 @@ impl SettingsPanel {
     pub fn provider_action_text(&self, action: &ProviderAction) -> String {
         match action {
             ProviderAction::New => t!("tui.providers.add").into_owned(),
-            ProviderAction::More => t!(
-                "tui.providers.more_fmt",
-                mark = if self.providers.more { "▾" } else { "▸" }
-            )
-            .into_owned(),
+            ProviderAction::Test => match &self.providers.test {
+                Some(state) if state.pending.is_some() => t!("tui.providers.testing").into_owned(),
+                _ => t!("tui.providers.test").into_owned(),
+            },
             ProviderAction::Fetch => match &self.providers.discovery {
                 Some(discovery) if discovery.pending.is_some() => {
                     t!("tui.providers.fetching_short").into_owned()
@@ -450,6 +827,40 @@ impl SettingsPanel {
                 _ => t!("tui.providers.fetch").into_owned(),
             },
             ProviderAction::Manual => t!("tui.providers.manual").into_owned(),
+            ProviderAction::FilterModels => {
+                if self.providers.model_filter.is_empty() {
+                    t!("tui.providers.filter_models").into_owned()
+                } else {
+                    t!(
+                        "tui.providers.filter_models_active",
+                        query = self.providers.model_filter.as_str()
+                    )
+                    .into_owned()
+                }
+            }
+            ProviderAction::AddParam => t!("tui.providers.add_param").into_owned(),
+            ProviderAction::BatchReasoning => t!(
+                "tui.providers.batch_reasoning",
+                count = self.providers.batch_models.len()
+            )
+            .into_owned(),
+            ProviderAction::BatchVision => t!(
+                "tui.providers.batch_vision",
+                count = self.providers.batch_models.len()
+            )
+            .into_owned(),
+            ProviderAction::BatchToggleEnabled => t!(
+                "tui.providers.batch_toggle_enabled",
+                count = self.providers.batch_models.len()
+            )
+            .into_owned(),
+            ProviderAction::BatchDelete => t!(
+                "tui.providers.batch_delete",
+                count = self.providers.batch_models.len()
+            )
+            .into_owned(),
+            ProviderAction::BatchClear => t!("tui.providers.batch_clear").into_owned(),
+            ProviderAction::Clone => t!("tui.providers.clone").into_owned(),
             ProviderAction::Remove => t!("tui.providers.remove").into_owned(),
         }
     }
@@ -512,37 +923,153 @@ impl SettingsPanel {
         let Some(provider) = self.providers.selected.clone() else {
             return;
         };
-        let ids: Vec<String> = self
-            .providers
-            .discovery
-            .as_ref()
-            .map(|d| {
-                d.checked
-                    .iter()
-                    .filter(|id| {
-                        self.effective["providers"][&provider]["models"]
-                            .get(id.as_str())
+        let visible = self.visible_candidates();
+        let chosen: Vec<CatalogModel> = {
+            let Some(d) = &self.providers.discovery else {
+                return;
+            };
+            let mut list: Vec<CatalogModel> = d
+                .rows
+                .iter()
+                .filter(|model| {
+                    d.checked.contains(&model.id)
+                        && self.effective["providers"][&provider]["models"]
+                            .get(model.id.as_str())
                             .is_none()
-                    })
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        if ids.is_empty() {
+                })
+                .cloned()
+                .collect();
+            // 未手动勾选时按 Enter 直接添加当前高亮项，减少一次 Space 操作。
+            if list.is_empty()
+                && let Some(&cand_idx) = visible.get(d.cursor)
+                && let Some(model) = d.rows.get(cand_idx)
+                && self.effective["providers"][&provider]["models"]
+                    .get(model.id.as_str())
+                    .is_none()
+            {
+                list.push(model.clone());
+            }
+            list
+        };
+        if chosen.is_empty() {
             self.error = Some(t!("tui.err.check_models").into_owned());
             return;
         }
+        let count = chosen.len();
         let result = self.commit(&t!("tui.snap.add_models"), app, connection, |panel| {
-            for id in &ids {
-                panel.insert_model(&provider, id)?;
+            for model in &chosen {
+                let entry = model_entry_from_catalog(model);
+                panel.insert_model_entry(&provider, &model.id, entry)?;
             }
             Ok(Store::Core)
         });
         if result.is_ok() {
-            self.providers.discovery = None;
+            // 保持发现弹窗打开并清空勾选，允许用户继续输入其他关键词添加下一批模型。
+            if let Some(d) = &mut self.providers.discovery {
+                d.checked.clear();
+                d.status = Some(t!("tui.providers.added_keep_open", count = count).into_owned());
+            }
             self.rebuild_rows();
-            self.open_model(&provider, &ids[0]);
         }
+    }
+
+    pub fn open_param_picker(&mut self) {
+        let indices: Vec<usize> = self
+            .available_param_indices()
+            .into_iter()
+            .filter(|&idx| !self.is_param_active(&self.fields[idx]))
+            .collect();
+        self.providers.param_picker = Some(ParamPicker {
+            indices,
+            query: String::new(),
+            cursor: 0,
+            offset: 0,
+            scroll: ModelScroll::default(),
+        });
+        self.error = None;
+    }
+
+    pub fn confirm_param_pick(&mut self, app: &mut App, connection: &EmbeddedConnection) {
+        let visible = self.visible_param_picks();
+        let cursor = self.providers.param_picker.as_ref().map_or(0, |p| p.cursor);
+        let Some(&field_idx) = visible.get(cursor) else {
+            return;
+        };
+        let path = self.fields[field_idx].path.clone();
+        self.providers.pinned_params.insert(path.join("/"));
+        self.providers.param_picker = None;
+        self.rebuild_rows();
+        self.select_path(&path);
+        self.begin_edit(app, connection);
+    }
+
+    fn current_model_id(&self) -> Option<String> {
+        if let Some(mid) = &self.providers.editing_model {
+            return Some(mid.clone());
+        }
+        match self.row() {
+            Some(RowKind::Group(group)) => match group.grouping.as_slice() {
+                [p, _, m, mid] if p == "providers" && m == "models" => Some(mid.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn toggle_selected_enabled(&mut self, app: &mut App, connection: &EmbeddedConnection) {
+        let Some(pid) = self.providers.selected.clone() else {
+            return;
+        };
+        if !self.providers.sidebar
+            && let Some(mid) = self.current_model_id()
+        {
+            let path = vec![
+                "providers".into(),
+                pid.clone(),
+                "models".into(),
+                mid.clone(),
+                "enabled".into(),
+            ];
+            let current = self.value(&path).and_then(Value::as_bool).unwrap_or(true);
+            let next = if current { Some(json!(false)) } else { None };
+            let _ = self.commit(&format!("{mid}: enabled"), app, connection, |panel| {
+                panel.put(&path, next);
+                Ok(Store::Core)
+            });
+            return;
+        }
+        let path = vec!["providers".into(), pid.clone(), "enabled".into()];
+        let current = self.value(&path).and_then(Value::as_bool).unwrap_or(true);
+        let next = if current { Some(json!(false)) } else { None };
+        let _ = self.commit(&format!("{pid}: enabled"), app, connection, |panel| {
+            panel.put(&path, next);
+            Ok(Store::Core)
+        });
+    }
+
+    pub fn start_clone(&mut self) {
+        let Some(pid) = self.providers.selected.clone() else {
+            return;
+        };
+        if !self.providers.sidebar
+            && let Some(mid) = self.current_model_id()
+        {
+            let suggested = next_copy_id(&mid, &self.provider_model_ids(&pid));
+            self.begin_named(
+                EditTarget::CloneModel(pid, mid.clone()),
+                &t!("tui.providers.clone_model_title", id = mid),
+                &t!("tui.providers.clone_model_note"),
+                &suggested,
+            );
+            return;
+        }
+        let suggested = next_copy_id(&pid, &self.provider_ids());
+        self.begin_named(
+            EditTarget::CloneProvider(pid.clone()),
+            &t!("tui.providers.clone_provider_title", id = pid),
+            &t!("tui.providers.field_id_desc"),
+            &suggested,
+        );
     }
 
     pub fn provider_action(
@@ -553,14 +1080,13 @@ impl SettingsPanel {
     ) {
         match action {
             ProviderAction::New => self.new_provider(),
-            ProviderAction::More => {
-                self.providers.more = !self.providers.more;
-                self.rebuild_rows();
-                self.select_action(ProviderAction::More);
-            }
+            ProviderAction::Test => self.test_connection(connection, &app.events),
             ProviderAction::Fetch => self.fetch(connection, &app.events),
             ProviderAction::Manual => {
                 if let Some(id) = self.providers.selected.clone() {
+                    self.providers.subtab = ProviderSubTab::Models;
+                    self.providers.editing_model = None;
+                    self.rebuild_rows();
                     self.select_action(ProviderAction::Manual);
                     self.begin_named(
                         EditTarget::Model(id.clone()),
@@ -571,14 +1097,190 @@ impl SettingsPanel {
                     self.edit.as_mut().expect("刚打开输入").popup = false;
                 }
             }
+            ProviderAction::FilterModels => {
+                let current = self.providers.model_filter.clone();
+                self.begin_named(
+                    EditTarget::ModelFilter,
+                    &t!("tui.providers.filter_models"),
+                    &t!("tui.providers.filter_models_note"),
+                    &current,
+                );
+            }
+            ProviderAction::AddParam => self.open_param_picker(),
+            ProviderAction::BatchReasoning => {
+                self.batch_update_models(app, connection, "reasoning", Some(json!(true)));
+            }
+            ProviderAction::BatchVision => {
+                self.batch_update_models(app, connection, "input", Some(json!(["text", "image"])));
+            }
+            ProviderAction::BatchToggleEnabled => {
+                let Some(pid) = self.providers.selected.clone() else {
+                    return;
+                };
+                let any_enabled = self.providers.batch_models.iter().any(|mid| {
+                    self.effective["providers"][&pid]["models"][mid]
+                        .get("enabled")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true)
+                });
+                let next = if any_enabled { Some(json!(false)) } else { None };
+                self.batch_update_models(app, connection, "enabled", next);
+            }
+            ProviderAction::BatchDelete => {
+                let Some(pid) = self.providers.selected.clone() else {
+                    return;
+                };
+                let ids: Vec<String> = self
+                    .providers
+                    .batch_models
+                    .iter()
+                    .filter(|mid| {
+                        self.explicit(&[
+                            "providers".into(),
+                            pid.clone(),
+                            "models".into(),
+                            (*mid).clone(),
+                        ])
+                    })
+                    .cloned()
+                    .collect();
+                if ids.is_empty() {
+                    self.error = Some(t!("tui.providers.batch_no_explicit").into_owned());
+                    return;
+                }
+                let _ = self.commit(&t!("tui.providers.batch_delete_snap"), app, connection, |panel| {
+                    for mid in &ids {
+                        panel.remove_value(&[
+                            "providers".into(),
+                            pid.clone(),
+                            "models".into(),
+                            mid.clone(),
+                        ]);
+                    }
+                    Ok(Store::Core)
+                });
+                self.providers.batch_models.clear();
+                self.rebuild_rows();
+            }
+            ProviderAction::BatchClear => {
+                self.providers.batch_models.clear();
+                self.rebuild_rows();
+            }
+            ProviderAction::Clone => self.start_clone(),
             ProviderAction::Remove => {
                 if let Some(id) = &self.providers.selected {
+                    if self.inherited_from_global(&["providers".into(), id.clone()]) {
+                        self.error = Some(t!("tui.providers.inherited_no_delete").into_owned());
+                        return;
+                    }
                     self.view = View::Confirm {
                         text: t!("tui.providers.remove_confirm", id = id).into_owned(),
                         action: ConfirmAction::Remove(vec!["providers".into(), id.clone()]),
                     };
                 }
             }
+        }
+    }
+
+    fn batch_update_models(
+        &mut self,
+        app: &mut App,
+        connection: &EmbeddedConnection,
+        key: &str,
+        value: Option<Value>,
+    ) {
+        let Some(pid) = self.providers.selected.clone() else {
+            return;
+        };
+        let ids: Vec<String> = self.providers.batch_models.iter().cloned().collect();
+        if ids.is_empty() {
+            return;
+        }
+        let label = format!("Batch {key} ({})", ids.len());
+        let _ = self.commit(&label, app, connection, |panel| {
+            for mid in &ids {
+                let path = vec![
+                    "providers".into(),
+                    pid.clone(),
+                    "models".into(),
+                    mid.clone(),
+                    key.into(),
+                ];
+                panel.put(&path, value.clone());
+            }
+            Ok(Store::Core)
+        });
+        self.providers.batch_models.clear();
+        self.rebuild_rows();
+    }
+
+    pub fn test_connection(
+        &mut self,
+        connection: &EmbeddedConnection,
+        events: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    ) {
+        let (id, provider) = if let Some(draft) = &self.providers.draft {
+            match draft.preview_payload() {
+                Ok(pair) => pair,
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    return;
+                }
+            }
+        } else {
+            let Some(id) = self.providers.selected.clone() else {
+                self.error = Some(t!("tui.err.need_provider").into_owned());
+                return;
+            };
+            (id.clone(), self.effective["providers"][&id].clone())
+        };
+        self.providers.generation += 1;
+        let generation = self.providers.generation;
+        let client = connection.client.clone();
+        let events = events.clone();
+        let panel = self.id;
+        let task = tokio::spawn(async move {
+            let result = client
+                .call::<ConfigManage>(ConfigAction::TestProvider { id, provider })
+                .await
+                .map_err(anyhow::Error::from);
+            let _ = events.send(AppEvent::SettingsResponse {
+                panel,
+                job: Job::TestProvider(generation),
+                result,
+            });
+        });
+        self.providers.test = Some(TestState {
+            generation,
+            pending: Some(task.abort_handle()),
+            result: None,
+        });
+        self.error = None;
+    }
+
+    pub fn test_provider_response(&mut self, generation: u64, result: anyhow::Result<ConfigReply>) {
+        let Some(state) = &mut self.providers.test else {
+            return;
+        };
+        if state.generation != generation {
+            return;
+        }
+        state.pending = None;
+        match result {
+            Ok(ConfigReply::ProviderTest(report)) => {
+                state.result = Some(report);
+            }
+            Err(error) => {
+                state.result = Some(ProviderTestResult {
+                    ok: false,
+                    latency_ms: 0,
+                    endpoint: String::new(),
+                    status: None,
+                    models_count: None,
+                    message: error.to_string(),
+                });
+            }
+            Ok(_) => {}
         }
     }
 
@@ -624,6 +1326,7 @@ impl SettingsPanel {
             offset: 0,
             scroll: ModelScroll::default(),
             error: None,
+            status: None,
             pending: Some(task.abort_handle()),
         });
         self.error = None;
@@ -651,18 +1354,6 @@ impl SettingsPanel {
         self.rebuild_rows();
     }
 
-    pub fn open_model(&mut self, provider: &str, model: &str) {
-        self.expanded
-            .insert(format!("providers/{provider}/models/{model}"));
-        self.rebuild_rows();
-        self.select_path(&[
-            "providers".into(),
-            provider.into(),
-            "models".into(),
-            model.into(),
-        ]);
-    }
-
     fn submit_provider(&mut self, app: &mut App, connection: &EmbeddedConnection, discover: bool) {
         if app.saving_config() {
             self.error = Some(t!("tui.err.saving_wait").into_owned());
@@ -683,7 +1374,7 @@ impl SettingsPanel {
         set(&mut document, &["providers".into(), id.clone()], value);
         let snapshot = self.snapshot(&t!("tui.snap.add_provider", id = id));
         let write = ConfigWrite {
-            scope: ConfigScope::Global,
+            scope: self.scope,
             cwd: self.cwd.clone(),
             document,
             revision: data.revision.clone(),
@@ -713,6 +1404,9 @@ impl SettingsPanel {
             .put(draft.pending.take().expect("提交前快照"), true);
         self.providers.selected = Some(draft.id.input.text.trim().into());
         self.providers.sidebar = false;
+        self.providers.subtab = ProviderSubTab::Models;
+        self.providers.editing_model = None;
+        self.providers.test = None;
         self.selected = 0;
         self.offset = 0;
         self.scroll.reveal_selection = true;
@@ -724,7 +1418,7 @@ impl SettingsPanel {
     }
 }
 
-/// 专属页面先处理焦点与表单输入，其余字段编辑仍走共用控件。
+/// 专属页面先处理弹窗、表单、子页签与侧栏焦点，其余字段编辑仍走共用控件。
 pub fn key(
     panel: &mut SettingsPanel,
     app: &mut App,
@@ -736,89 +1430,87 @@ pub fn key(
         return false;
     }
     if panel.providers.draft.is_some() {
-        if panel
-            .providers
-            .draft
-            .as_ref()
-            .is_some_and(|draft| draft.pending.is_some())
-        {
-            return true;
-        }
-        if code == KeyCode::Esc {
-            panel.providers.draft = None;
-            panel.error = None;
-            return true;
-        }
-        let draft = panel.providers.draft.as_mut().expect("表单存在");
-        if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('s') {
-            panel.submit_provider(app, connection, true);
-            return true;
-        }
-        let focus_before = draft.focus;
-        match code {
-            KeyCode::Tab if mods.contains(KeyModifiers::SHIFT) => {
-                draft.focus = (draft.focus + 5) % 6
-            }
-            KeyCode::Tab | KeyCode::Down => draft.focus = (draft.focus + 1) % 6,
-            KeyCode::BackTab | KeyCode::Up => draft.focus = (draft.focus + 5) % 6,
-            KeyCode::Enter if draft.focus >= 4 => {
-                let discover = draft.focus == 4;
-                panel.submit_provider(app, connection, discover);
-            }
-            KeyCode::Enter if draft.focus != 1 => draft.focus += 1,
-            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right if draft.focus == 1 => {
-                draft.api = (draft.api + 1) % APIS.len()
-            }
-            KeyCode::Left if draft.focus == 1 => {
-                draft.api = (draft.api + APIS.len() - 1) % APIS.len()
-            }
-            KeyCode::F(6) => draft.key.reveal = !draft.key.reveal,
-            _ => {
-                if let Some(input) = draft.input() {
-                    crate::widgets::prompt::edit_input(&mut input.input, mods, code);
-                }
-            }
-        }
-        if let Some(draft) = panel.providers.draft.as_mut()
-            && draft.focus != focus_before
-        {
-            draft.scroll.reveal_selection = true;
-        }
-        return true;
+        return draft_key(panel, app, connection, mods, code);
     }
     if panel.providers.discovery.is_some() {
         discovery_key(panel, app, connection, mods, code);
         return true;
     }
+    if panel.providers.param_picker.is_some() {
+        param_picker_key(panel, app, connection, mods, code);
+        return true;
+    }
+    // `Tab` / `Shift+Tab` 在当前视图的子页签间循环（Models ↔ Connection ↔ Params / General ↔ Compat ↔ Params）。
     if matches!(code, KeyCode::Tab | KeyCode::BackTab) {
         let previous = code == KeyCode::BackTab || mods.contains(KeyModifiers::SHIFT);
-        let selected_before = panel.selected;
-        let sidebar_before = panel.providers.sidebar;
         if panel.providers.sidebar {
             panel.choose_provider(panel.providers.cursor);
             panel.providers.sidebar = false;
-        } else if previous && panel.selected > 0 {
-            panel.selected -= 1;
-        } else if !previous && panel.selected + 1 < panel.rows.len() {
-            panel.selected += 1;
+        } else if panel.providers.editing_model.is_some() {
+            let next = panel.providers.model_subtab.cycle(previous);
+            panel.set_model_subtab(next);
+        } else {
+            let next = panel.providers.subtab.cycle(previous);
+            panel.set_provider_subtab(next);
+        }
+        return true;
+    }
+    if code == KeyCode::Esc {
+        if panel.providers.editing_model.is_some() {
+            panel.close_model();
+            return true;
+        }
+        if panel.providers.sidebar {
+            panel.providers.sidebar = false;
+            return true;
+        }
+        if !panel.providers.batch_models.is_empty() {
+            panel.providers.batch_models.clear();
+            panel.rebuild_rows();
+            return true;
+        }
+        if !panel.providers.model_filter.is_empty() {
+            panel.providers.model_filter.clear();
+            panel.rebuild_rows();
+            return true;
+        }
+        return false;
+    }
+    if matches!(code, KeyCode::Left | KeyCode::Char('h'))
+        && mods == KeyModifiers::NONE
+        && !panel.providers.sidebar
+    {
+        if panel.providers.editing_model.is_some() {
+            panel.close_model();
         } else {
             panel.providers.sidebar = true;
-        }
-        if panel.selected != selected_before {
-            panel.scroll.reveal_selection = true;
-        }
-        if !sidebar_before && panel.providers.sidebar {
             panel.providers.scroll.reveal_selection = true;
         }
         return true;
     }
-    if code == KeyCode::Esc && panel.providers.sidebar {
-        panel.providers.sidebar = false;
+    if code == KeyCode::Char('s') && mods == KeyModifiers::NONE {
+        panel.toggle_scope(app, connection);
         return true;
     }
-    if code == KeyCode::Left && !matches!(panel.row(), Some(RowKind::Group(_))) {
-        panel.providers.sidebar = true;
-        panel.providers.scroll.reveal_selection = true;
+    if code == KeyCode::Char('n') && mods == KeyModifiers::NONE {
+        panel.new_provider();
+        return true;
+    }
+    if code == KeyCode::Char('t') && mods == KeyModifiers::NONE {
+        if panel.providers.sidebar {
+            panel.preview_provider(panel.providers.cursor);
+        }
+        if panel.providers.draft.is_none() {
+            panel.test_connection(connection, &app.events);
+        }
+        return true;
+    }
+    if code == KeyCode::Char('c') && mods == KeyModifiers::NONE {
+        panel.start_clone();
+        return true;
+    }
+    if code == KeyCode::Char('x') && mods == KeyModifiers::NONE {
+        panel.toggle_selected_enabled(app, connection);
         return true;
     }
     if code == KeyCode::Char('x') && mods == KeyModifiers::CONTROL {
@@ -831,16 +1523,12 @@ pub fn key(
         }
         return true;
     }
-    if code == KeyCode::Char('n') && mods == KeyModifiers::NONE {
-        panel.new_provider();
-        return true;
-    }
-    let action = match code {
+    let quick_action = match code {
         KeyCode::Char('a') if mods == KeyModifiers::NONE => Some(ProviderAction::Manual),
         KeyCode::Char('f') if mods == KeyModifiers::NONE => Some(ProviderAction::Fetch),
         _ => None,
     };
-    if let Some(action) = action {
+    if let Some(action) = quick_action {
         if panel.providers.sidebar {
             panel.choose_provider(panel.providers.cursor);
             panel.providers.sidebar = false;
@@ -855,23 +1543,55 @@ pub fn key(
         let cursor_before = panel.providers.cursor;
         match code {
             KeyCode::Up | KeyCode::Char('k') => {
-                panel.providers.cursor = panel.providers.cursor.saturating_sub(1)
+                panel.providers.cursor = panel.providers.cursor.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                panel.providers.cursor = (panel.providers.cursor + 1).min(last)
+                panel.providers.cursor = (panel.providers.cursor + 1).min(last);
             }
-            KeyCode::Home => panel.providers.cursor = 0,
-            KeyCode::End => panel.providers.cursor = last,
-            KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ') => {
+            KeyCode::Home | KeyCode::Char('g') => panel.providers.cursor = 0,
+            KeyCode::End | KeyCode::Char('G') => panel.providers.cursor = last,
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => {
                 panel.choose_provider(panel.providers.cursor);
                 panel.providers.sidebar = false;
+                return true;
+            }
+            KeyCode::Delete => {
+                if panel.providers.cursor < last {
+                    panel.preview_provider(panel.providers.cursor);
+                    panel.provider_action(ProviderAction::Remove, app, connection);
+                }
+                return true;
             }
             _ => return false,
         }
         if panel.providers.cursor != cursor_before {
-            panel.providers.scroll.reveal_selection = true;
+            panel.preview_provider(panel.providers.cursor);
         }
         return true;
+    }
+    // Models 子页的模型行：Enter 钻取模型编辑，Space 切换批量勾选，Del 删除模型。
+    if panel.providers.editing_model.is_none()
+        && panel.providers.subtab == ProviderSubTab::Models
+        && let Some(RowKind::Group(group)) = panel.row()
+        && let [p, pid, m, mid] = group.grouping.as_slice()
+        && p == "providers"
+        && m == "models"
+    {
+        let (pid, mid) = (pid.clone(), mid.clone());
+        match code {
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                panel.open_model(&pid, &mid);
+                return true;
+            }
+            KeyCode::Char(' ') => {
+                if !panel.providers.batch_models.remove(&mid) {
+                    panel.providers.batch_models.insert(mid);
+                }
+                panel.rebuild_rows();
+                return true;
+            }
+            _ => {}
+        }
     }
     match code {
         KeyCode::Enter | KeyCode::Char(' ') => {
@@ -883,6 +1603,165 @@ pub fn key(
         _ => return false,
     }
     true
+}
+
+fn draft_key(
+    panel: &mut SettingsPanel,
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    mods: KeyModifiers,
+    code: KeyCode,
+) -> bool {
+    if panel
+        .providers
+        .draft
+        .as_ref()
+        .is_some_and(|draft| draft.pending.is_some())
+    {
+        return true;
+    }
+    if code == KeyCode::Esc {
+        panel.providers.draft = None;
+        panel.providers.test = None;
+        panel.error = None;
+        return true;
+    }
+    if mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('s') {
+        panel.submit_provider(app, connection, true);
+        return true;
+    }
+    let existing = panel.provider_ids();
+    let focus_before = panel.providers.draft.as_ref().map_or(0, |d| d.focus);
+    match code {
+        KeyCode::Tab if mods.contains(KeyModifiers::SHIFT) => {
+            if let Some(d) = &mut panel.providers.draft {
+                d.focus = (d.focus + DRAFT_CONTROLS - 1) % DRAFT_CONTROLS;
+            }
+        }
+        KeyCode::Tab | KeyCode::Down => {
+            if let Some(d) = &mut panel.providers.draft {
+                d.focus = (d.focus + 1) % DRAFT_CONTROLS;
+            }
+        }
+        KeyCode::BackTab | KeyCode::Up => {
+            if let Some(d) = &mut panel.providers.draft {
+                d.focus = (d.focus + DRAFT_CONTROLS - 1) % DRAFT_CONTROLS;
+            }
+        }
+        KeyCode::Enter if focus_before == 5 => {
+            panel.test_connection(connection, &app.events);
+        }
+        KeyCode::Enter if focus_before >= 6 => {
+            panel.submit_provider(app, connection, focus_before == 6);
+        }
+        // Preset 与 API 行按 Enter 同样前进到下一字段，避免填表卡死。
+        KeyCode::Enter => {
+            if let Some(d) = &mut panel.providers.draft {
+                d.focus = (d.focus + 1).min(DRAFT_CONTROLS - 1);
+            }
+        }
+        KeyCode::Right | KeyCode::Char(' ') if focus_before == 0 => {
+            if let Some(d) = &mut panel.providers.draft {
+                let next = (d.preset + 1) % PROVIDER_PRESETS.len();
+                d.apply_preset(next, &existing);
+            }
+            panel.error = None;
+        }
+        KeyCode::Left if focus_before == 0 => {
+            if let Some(d) = &mut panel.providers.draft {
+                let prev = (d.preset + PROVIDER_PRESETS.len() - 1) % PROVIDER_PRESETS.len();
+                d.apply_preset(prev, &existing);
+            }
+            panel.error = None;
+        }
+        KeyCode::Right | KeyCode::Char(' ') if focus_before == 2 => {
+            if let Some(d) = &mut panel.providers.draft {
+                d.api = (d.api + 1) % APIS.len();
+            }
+        }
+        KeyCode::Left if focus_before == 2 => {
+            if let Some(d) = &mut panel.providers.draft {
+                d.api = (d.api + APIS.len() - 1) % APIS.len();
+            }
+        }
+        KeyCode::F(6) => {
+            if let Some(d) = &mut panel.providers.draft {
+                d.key.reveal = !d.key.reveal;
+            }
+        }
+        _ => {
+            if let Some(d) = &mut panel.providers.draft
+                && let Some(input) = d.input()
+            {
+                crate::widgets::prompt::edit_input(&mut input.input, mods, code);
+            }
+        }
+    }
+    if let Some(draft) = panel.providers.draft.as_mut()
+        && draft.focus != focus_before
+    {
+        draft.scroll.reveal_selection = true;
+    }
+    true
+}
+
+fn param_picker_key(
+    panel: &mut SettingsPanel,
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    mods: KeyModifiers,
+    code: KeyCode,
+) {
+    if code == KeyCode::Esc {
+        panel.providers.param_picker = None;
+        return;
+    }
+    if code == KeyCode::Enter {
+        panel.confirm_param_pick(app, connection);
+        return;
+    }
+    let visible = panel.visible_param_picks();
+    let last = visible.len().saturating_sub(1);
+    let Some(picker) = &mut panel.providers.param_picker else {
+        return;
+    };
+    let before = picker.cursor;
+    match code {
+        KeyCode::Up => picker.cursor = picker.cursor.saturating_sub(1),
+        KeyCode::Down => picker.cursor = (picker.cursor + 1).min(last),
+        KeyCode::Char('k') if mods == KeyModifiers::CONTROL => {
+            picker.cursor = picker.cursor.saturating_sub(1);
+        }
+        KeyCode::Char('j') if mods == KeyModifiers::CONTROL => {
+            picker.cursor = (picker.cursor + 1).min(last);
+        }
+        KeyCode::PageUp => picker.cursor = picker.cursor.saturating_sub(10),
+        KeyCode::PageDown => picker.cursor = (picker.cursor + 10).min(last),
+        KeyCode::Home => picker.cursor = 0,
+        KeyCode::End => picker.cursor = last,
+        KeyCode::Backspace => {
+            picker.query.pop();
+            picker.cursor = 0;
+            picker.offset = 0;
+            picker.scroll.reveal_selection = true;
+        }
+        KeyCode::Char('u') if mods == KeyModifiers::CONTROL => {
+            picker.query.clear();
+            picker.cursor = 0;
+            picker.offset = 0;
+            picker.scroll.reveal_selection = true;
+        }
+        KeyCode::Char(c) if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            picker.query.push(c);
+            picker.cursor = 0;
+            picker.offset = 0;
+            picker.scroll.reveal_selection = true;
+        }
+        _ => {}
+    }
+    if picker.cursor != before {
+        picker.scroll.reveal_selection = true;
+    }
 }
 
 fn discovery_key(
@@ -937,6 +1816,12 @@ fn discovery_key(
     match code {
         KeyCode::Up => discovery.cursor = discovery.cursor.saturating_sub(1),
         KeyCode::Down => discovery.cursor = (discovery.cursor + 1).min(last),
+        KeyCode::Char('k') if mods == KeyModifiers::CONTROL => {
+            discovery.cursor = discovery.cursor.saturating_sub(1);
+        }
+        KeyCode::Char('j') if mods == KeyModifiers::CONTROL => {
+            discovery.cursor = (discovery.cursor + 1).min(last);
+        }
         KeyCode::PageUp => discovery.cursor = discovery.cursor.saturating_sub(10),
         KeyCode::PageDown => discovery.cursor = (discovery.cursor + 10).min(last),
         KeyCode::Home => discovery.cursor = 0,

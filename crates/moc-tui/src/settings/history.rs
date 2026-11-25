@@ -85,12 +85,37 @@ impl SettingsPanel {
         app.write_config(
             connection,
             ConfigWrite {
-                scope: ConfigScope::Global,
+                scope: self.scope,
                 cwd: self.cwd.clone(),
                 document: data.document.clone(),
                 revision: data.revision.clone(),
             },
         );
+    }
+
+    /// 切换 Global / Project 配置作用域并重新加载文档。
+    pub fn toggle_scope(&mut self, app: &mut App, connection: &EmbeddedConnection) {
+        if app.saving_config() || self.busy {
+            self.error = Some(t!("tui.err.saving_wait").into_owned());
+            return;
+        }
+        self.scope = match self.scope {
+            ConfigScope::Global => ConfigScope::Project,
+            ConfigScope::Project => ConfigScope::Global,
+        };
+        self.data = None;
+        self.edit = None;
+        self.error = None;
+        self.message = None;
+        self.history = Default::default();
+        self.providers.discovery = None;
+        self.providers.param_picker = None;
+        self.providers.test = None;
+        self.providers.batch_models.clear();
+        self.selected = 0;
+        self.offset = 0;
+        self.scroll.reveal_selection = true;
+        self.ensure_loaded(app, connection);
     }
 
     /// 写入界面偏好文件，并把新设置应用到当前界面。
@@ -201,7 +226,7 @@ impl SettingsPanel {
                 self.message = None;
                 self.rebuild();
             }
-            Ok(ConfigReply::Models(_)) => {}
+            Ok(ConfigReply::Models(_)) | Ok(ConfigReply::ProviderTest(_)) => {}
             Ok(ConfigReply::Maintenance(report)) => {
                 self.view = View::Maintenance { report, offset: 0 }
             }
@@ -221,7 +246,7 @@ impl SettingsPanel {
             connection,
             &app.events,
             ConfigAction::Read {
-                scope: ConfigScope::Global,
+                scope: self.scope,
                 cwd: self.cwd.clone(),
             },
             Job::Load,

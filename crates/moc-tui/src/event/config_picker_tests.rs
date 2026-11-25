@@ -168,6 +168,7 @@ async fn config_model_role_picker_shares_the_searchable_picker() {
     ];
     app.settings = Some(SettingsPanel {
         id: 1,
+        scope: moc_protocol::ConfigScope::Global,
         cwd: "/tmp".into(),
         data: Some(SettingsDocument {
             path: "config.toml".into(),

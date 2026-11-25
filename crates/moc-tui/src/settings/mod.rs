@@ -6,7 +6,7 @@ mod forms;
 mod providers;
 mod render;
 
-use providers::{ProviderAction, Providers};
+use providers::{ModelSubTab, ProviderAction, ProviderSubTab, Providers};
 
 use crate::{
     app::{App, ConfigWrite},
@@ -81,6 +81,8 @@ pub(super) fn tab_title(tab: &str) -> &str {
 pub struct SettingsPanel {
     pub id: u64,
     pub cwd: String,
+    /// 当前编辑的配置作用域（Global / Project，可按 `s` 切换）。
+    pub scope: ConfigScope,
     pub data: Option<SettingsDocument>,
     pub tui: Value,
     pub effective: Value,
@@ -125,6 +127,8 @@ pub enum Job {
     Save,
     /// 获取供应商的模型候选。
     Models(u64),
+    /// 测试供应商连通性。
+    TestProvider(u64),
     /// 存储维护的预览或执行结果。
     Maintenance,
     /// 确认卡片批准的一次性写入。
@@ -248,6 +252,12 @@ pub enum EditTarget {
     /// 选中 Azure 端点后填写 `api_version`；路径指向 `providers.<p>.endpoint`。
     Azure(Vec<String>),
     Model(String),
+    /// 克隆供应商为新 ID。
+    CloneProvider(String),
+    /// 克隆模型为新 ID（provider_id, source_model_id）。
+    CloneModel(String, String),
+    /// 在 Models 子页按关键词过滤已添加模型。
+    ModelFilter,
     Mcp,
     ModelDefaults,
     Filter,
@@ -266,8 +276,14 @@ pub enum Hit {
     /// 新建供应商表单控件。
     ProviderInput(usize),
     ProviderAction(ProviderAction),
+    /// 供应商详情子页签（Models / Connection / Params）。
+    ProviderSubTab(ProviderSubTab),
+    /// 模型详情子页签（General / Compat / Params）。
+    ModelSubTab(ModelSubTab),
     /// 获取模型弹窗里的第 N 个候选行。
     DiscoveryItem(usize),
+    /// 参数添加弹窗里的第 N 个候选行。
+    ParamPickItem(usize),
     /// 提示条/弹窗 footer 上的键位：等价于按下该键，编辑态下同样生效
     /// （提示条描述的正是当前编辑器接受的键）。
     Hint(KeyCode, KeyModifiers),
@@ -301,6 +317,7 @@ pub fn open(app: &mut App, connection: &EmbeddedConnection) {
     let mut panel = SettingsPanel {
         id: app.next_config_id,
         cwd: cwd.clone(),
+        scope: ConfigScope::Global,
         data: None,
         tui: tui.clone(),
         effective: json!({}),

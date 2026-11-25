@@ -186,24 +186,6 @@ pub(super) fn draw_fields(
                             y,
                         ));
                     }
-                } else if matches!(action, ProviderAction::More) {
-                    let count = t!(
-                        "tui.settings.item_count",
-                        count = panel.provider_more_count()
-                    )
-                    .into_owned();
-                    let detail_style = if selected {
-                        style.fg(theme.gray_bright)
-                    } else {
-                        style.fg(theme.gray)
-                    };
-                    label(
-                        frame,
-                        label_area,
-                        &format!("{lead}{}", panel.provider_action_text(action)),
-                        style.fg(theme.accent_running).add_modifier(Modifier::BOLD),
-                    );
-                    label(frame, value_area, &count, detail_style);
                 } else {
                     let accent = match action {
                         ProviderAction::Fetch => match &panel.providers.discovery {
@@ -211,10 +193,23 @@ pub(super) fn draw_fields(
                             Some(discovery) if discovery.error.is_some() => theme.accent_error,
                             _ => theme.accent_success,
                         },
-                        ProviderAction::Manual => theme.accent_tool,
+                        ProviderAction::Test => match &panel.providers.test {
+                            Some(state) if state.pending.is_some() => theme.accent_running,
+                            Some(state) if state.result.as_ref().is_some_and(|r| !r.ok) => {
+                                theme.accent_error
+                            }
+                            _ => theme.accent_model,
+                        },
+                        ProviderAction::Manual
+                        | ProviderAction::FilterModels
+                        | ProviderAction::AddParam
+                        | ProviderAction::Clone => theme.accent_tool,
                         ProviderAction::New => theme.accent_success,
-                        ProviderAction::Remove => theme.accent_error,
-                        ProviderAction::More => theme.accent_running,
+                        ProviderAction::Remove | ProviderAction::BatchDelete => theme.accent_error,
+                        ProviderAction::BatchReasoning
+                        | ProviderAction::BatchVision
+                        | ProviderAction::BatchToggleEnabled
+                        | ProviderAction::BatchClear => theme.accent_running,
                     };
                     let pill_bg = if selected {
                         theme.bg_selection
@@ -395,9 +390,17 @@ pub(super) fn draw_fields(
     match panel.row() {
         Some(RowKind::Action(action)) => Footer {
             description: match action {
-                ProviderAction::More => t!("tui.settings.act_more"),
+                ProviderAction::Test => t!("tui.settings.act_test"),
                 ProviderAction::Fetch => t!("tui.settings.act_fetch"),
                 ProviderAction::Manual => t!("tui.settings.act_manual"),
+                ProviderAction::FilterModels => t!("tui.settings.act_filter_models"),
+                ProviderAction::AddParam => t!("tui.settings.act_add_param"),
+                ProviderAction::BatchReasoning => t!("tui.settings.act_batch_reasoning"),
+                ProviderAction::BatchVision => t!("tui.settings.act_batch_vision"),
+                ProviderAction::BatchToggleEnabled => t!("tui.settings.act_batch_toggle"),
+                ProviderAction::BatchDelete => t!("tui.settings.act_batch_delete"),
+                ProviderAction::BatchClear => t!("tui.settings.act_batch_clear"),
+                ProviderAction::Clone => t!("tui.settings.act_clone"),
                 ProviderAction::New => t!("tui.settings.act_new"),
                 ProviderAction::Remove => t!("tui.settings.act_remove"),
             }

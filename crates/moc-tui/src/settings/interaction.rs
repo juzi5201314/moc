@@ -68,6 +68,10 @@ pub(super) fn scroll(panel: &mut SettingsPanel, point: ratatui::layout::Position
             discovery.scroll.scroll_by(&mut discovery.offset, delta);
             return;
         }
+        if let Some(picker) = &mut panel.providers.param_picker {
+            picker.scroll.scroll_by(&mut picker.offset, delta);
+            return;
+        }
         let sidebar = panel
             .hits
             .iter()
@@ -89,7 +93,7 @@ pub(super) fn scroll(panel: &mut SettingsPanel, point: ratatui::layout::Position
     panel.scroll.scroll_by(&mut panel.offset, delta);
 }
 
-/// 指针移动时让焦点跟随命中的列表行/侧栏项/弹窗项，不拉动手动滚动过的视口。
+/// 指针移动时记录坐标；非供应商页保持列表跟随，供应商页不抢走侧栏/详情键盘焦点。
 pub(super) fn hover(panel: &mut SettingsPanel, pointer: ratatui::layout::Position) {
     panel.pointer = Some(pointer);
     let hit = panel
@@ -109,24 +113,19 @@ pub(super) fn hover(panel: &mut SettingsPanel, pointer: ratatui::layout::Positio
         if let Some(Hit::DiscoveryItem(index)) = hit {
             discovery.cursor = index;
         }
+    } else if panel.provider_page()
+        && let Some(picker) = &mut panel.providers.param_picker
+    {
+        if let Some(Hit::ParamPickItem(index)) = hit {
+            picker.cursor = index;
+        }
+    } else if panel.provider_page() {
+        // 供应商页仅由 `paint_hover` 绘制背景高亮，避免鼠标划过侧栏时偷走键盘焦点。
     } else if matches!(panel.view, View::Fields) {
-        match hit {
-            Some(Hit::Row(index)) if index < panel.rows.len() => {
-                panel.providers.sidebar = false;
-                panel.selected = index;
-            }
-            Some(Hit::Provider(index)) => {
-                panel.providers.sidebar = true;
-                panel.providers.cursor = index;
-            }
-            Some(Hit::ProviderInput(index)) => {
-                if let Some(draft) = &mut panel.providers.draft
-                    && draft.pending.is_none()
-                {
-                    draft.focus = index;
-                }
-            }
-            _ => {}
+        if let Some(Hit::Row(index)) = hit
+            && index < panel.rows.len()
+        {
+            panel.selected = index;
         }
     }
 }
@@ -231,11 +230,37 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
         }
         return;
     }
+    if panel.provider_page() && panel.providers.param_picker.is_some() {
+        match hit {
+            Some(Hit::ParamPickItem(index)) => {
+                if let Some(picker) = &mut panel.providers.param_picker {
+                    picker.cursor = index;
+                }
+                let mut panel = app.settings.take().expect("设置页存在");
+                panel.confirm_param_pick(app, connection);
+                app.settings = Some(panel);
+            }
+            Some(Hit::DismissPopup) => {
+                panel.providers.param_picker = None;
+            }
+            Some(Hit::Hint(code, modifiers)) => handle_key(app, connection, modifiers, code),
+            _ => {}
+        }
+        return;
+    }
     let Some(hit) = hit else {
         return;
     };
     match hit {
         Hit::Tab(index) => panel.select_tab(index),
+        Hit::ProviderSubTab(subtab) => {
+            panel.providers.sidebar = false;
+            panel.set_provider_subtab(subtab);
+        }
+        Hit::ModelSubTab(subtab) => {
+            panel.providers.sidebar = false;
+            panel.set_model_subtab(subtab);
+        }
         // 滚动条是视口操作不是「点到别处」：只滚所在清单，不动光标。
         Hit::Scroll(offset) => match &mut panel.view {
             View::Maintenance {
@@ -268,7 +293,9 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
             if let Some(draft) = &mut panel.providers.draft {
                 draft.focus = index;
                 draft.scroll.reveal_selection = true;
-                if index == 1 || index >= 4 {
+                if index == 0 || index == 2 {
+                    handle_key(app, connection, KeyModifiers::NONE, KeyCode::Right);
+                } else if index >= 5 {
                     handle_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
                 }
             }

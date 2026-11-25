@@ -106,8 +106,8 @@ pub use job::{
 };
 pub use management::{
     CatalogModel, ChoiceOption, ConfigAction, ConfigField, ConfigManage, ConfigReply, ConfigScope,
-    FieldKind, MaintenanceReport, SessionSteer, SessionUnsteer, SettingsDocument, SteerParams,
-    SteerResult, UnsteerParams, UnsteerResult,
+    FieldKind, MaintenanceReport, ProviderTestResult, SessionSteer, SessionUnsteer,
+    SettingsDocument, SteerParams, SteerResult, UnsteerParams, UnsteerResult,
 };
 pub use mcp::{
     McpList, McpListParams, McpReconnect, McpReconnectParams, McpServerInfo, McpServerPhase,

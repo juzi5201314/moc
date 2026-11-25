@@ -26,6 +26,7 @@ pub mod discovery;
 pub mod editor;
 pub mod model;
 pub(crate) mod parameters;
+pub mod presets;
 mod schema;
 pub mod selection;
 pub mod web;

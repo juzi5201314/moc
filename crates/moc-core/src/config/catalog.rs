@@ -10,14 +10,14 @@ use moc_protocol::{ChoiceOption, ConfigField, FieldKind, SessionPermission};
 use serde_json::{Value, json};
 
 pub fn provider_template() -> Value {
-    json!({"api":"openai_chat", "base_url":"", "api_key":"", "headers":{}, "extra_body":{},
+    json!({"enabled":true, "api":"openai_chat", "base_url":"", "api_key":"", "headers":{}, "extra_body":{},
         "timeout_secs":null, "connect_timeout_secs":20.0, "max_concurrency":0, "cache":"auto",
         "retry":{"max_attempts":10,"initial_backoff_secs":0.5,"max_backoff_secs":300.0,"jitter":true},
         "endpoint":"Default", "models":{}})
 }
 
 pub fn model_template() -> Value {
-    json!({"image_gen":false,"context_window":200000,"max_output_tokens":32000,"max_request_bytes":null,"reasoning":false,
+    json!({"enabled":true,"image_gen":false,"context_window":200000,"max_output_tokens":32000,"max_request_bytes":null,"reasoning":false,
         "thinking_levels":null,"input":["text"],"pricing":null,"fast_mode":false,
         "compat":{"max_output_tokens_field":"max_tokens","supports_stop":true,
             "supports_prompt_cache_key":true,"reasoning_field":"reasoning_content",
@@ -307,7 +307,7 @@ fn walk(
         let mut keys: Vec<&String> = values.keys().collect();
         keys.sort_by_key(|key| rank(key));
         for key in keys {
-            if image_gen_model && !matches!(key.as_str(), "image_gen" | "compat") {
+            if image_gen_model && !matches!(key.as_str(), "enabled" | "image_gen" | "compat") {
                 continue;
             }
             if image_gen_model && key == "compat" {

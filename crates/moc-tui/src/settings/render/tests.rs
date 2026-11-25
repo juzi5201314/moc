@@ -16,6 +16,7 @@ fn select_popup_is_opaque_and_modal() {
     let mut panel = SettingsPanel {
         id: 1,
         cwd: "/tmp".into(),
+        scope: moc_protocol::ConfigScope::Global,
         data: None,
         tui: json!({}),
         effective: json!({}),
@@ -105,6 +106,7 @@ fn loaded(tab: &str, document: Value, fields: Vec<ConfigField>) -> SettingsPanel
     let mut panel = SettingsPanel {
         id: 1,
         cwd: "/tmp".into(),
+        scope: moc_protocol::ConfigScope::Global,
         data: Some(SettingsDocument {
             path: String::new(),
             revision: String::new(),
@@ -319,6 +321,7 @@ fn model_candidates_align_ids_and_model_card_highlighted() {
             .map(|id| moc_protocol::CatalogModel {
                 id: id.into(),
                 name: id.into(),
+                ..Default::default()
             })
             .collect(),
         checked: BTreeSet::from(["b2".to_owned()]),
@@ -327,6 +330,7 @@ fn model_candidates_align_ids_and_model_card_highlighted() {
         offset: 0,
         scroll: Default::default(),
         error: None,
+        status: None,
         pending: None,
     });
     let rows = screen(&mut panel, 100, 40);
@@ -390,7 +394,7 @@ fn provider_workspace_and_draft_fit_narrow_terminals() {
                 .iter()
                 .any(|(text, _)| text.contains("secret-must-stay-hidden"))
         );
-        for index in 0..6 {
+        for index in 0..crate::settings::providers::DRAFT_CONTROLS {
             panel.providers.draft.as_mut().unwrap().focus = index;
             screen(&mut panel, width, height);
             assert!(
@@ -411,8 +415,7 @@ fn provider_field_footer_exposes_reset() {
         json!({"providers": {"p": {"api": "openai_chat", "base_url": "https://example.invalid", "models": {"m": {}}}}}),
         Vec::new(),
     );
-    panel.expanded.insert("providers/p/models/m".into());
-    panel.rebuild_rows();
+    panel.open_model("p", "m");
     let path: Vec<String> = ["providers", "p", "models", "m", "context_window"]
         .map(str::to_owned)
         .to_vec();
@@ -428,7 +431,8 @@ fn provider_field_footer_exposes_reset() {
         "字段行提示条应露出恢复默认"
     );
 
-    panel.select_action(ProviderAction::More);
+    panel.close_model();
+    panel.select_action(ProviderAction::Fetch);
     let rows = screen(&mut panel, 120, 40);
     assert!(locate(&rows, "r Reset").is_none(), "非字段行不显示恢复默认");
 }
