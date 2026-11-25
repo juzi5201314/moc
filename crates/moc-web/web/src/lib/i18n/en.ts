@@ -130,7 +130,6 @@ export const en: Record<MsgKey, string> = {
   "th.collapse": "Collapse",
   "th.process": "Process",
   "th.duration": "Worked {n}",
-  "th.rewind_here": "Rewind",
   "th.rewind_edit": "Rewind & edit",
   "th.rewound": "Rewound",
   "th.rewound_desc": "Content after this message was removed from context.",

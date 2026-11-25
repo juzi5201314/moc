@@ -14,7 +14,6 @@ import {
   Loader2Icon,
   PencilIcon,
   RotateCcwIcon,
-  Undo2Icon,
 } from "lucide-react";
 import { type MouseEvent, memo, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -836,15 +835,6 @@ function AssistantTurn({
               <CopyIcon />
             </IconButton>
           )}
-          {finalBlock?.entryId && (
-            <IconButton
-              label={t("th.rewind_here")}
-              size="xs"
-              onClick={() => rewindTo(context.sessionId, finalBlock.entryId as string)}
-            >
-              <Undo2Icon />
-            </IconButton>
-          )}
           {canRetry && (
             <IconButton
               label={t("th.retry")}
@@ -854,10 +844,8 @@ function AssistantTurn({
               <RotateCcwIcon />
             </IconButton>
           )}
-          <span className="ml-1.5 flex items-center gap-1.5 text-2xs text-text-tertiary">
-            {turn.footer?.model && (
-              <span className="font-mono">{modelName(turn.footer.model)}</span>
-            )}
+          <span className="ml-1.5 flex items-baseline gap-1.5 text-2xs text-text-tertiary">
+            {turn.footer?.model && <span>{modelName(turn.footer.model)}</span>}
             {finishText && <span className="text-warn">{finishText}</span>}
             {replyDurationMs !== undefined && (
               <span className="tabular-nums">{formatElapsed(replyDurationMs)}</span>

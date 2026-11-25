@@ -127,7 +127,6 @@ export const zh = {
   "th.collapse": "Collapse",
   "th.process": "Process",
   "th.duration": "Worked {n}",
-  "th.rewind_here": "Rewind",
   "th.rewind_edit": "Rewind & edit",
   "th.rewound": "Rewound",
   "th.rewound_desc": "该条消息之后的内容已移出当前 context。",
