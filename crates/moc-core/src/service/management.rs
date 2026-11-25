@@ -11,7 +11,11 @@ use moc_protocol::{
     SteerResult, UnsteerParams, UnsteerResult, UpdateSink, WebStateDocument, WebStateSaveParams,
     WebStateUpdated,
 };
-use std::{collections::VecDeque, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    path::Path,
+    sync::Arc,
+};
 
 /// 一条已接受、但还没在安全边界写入会话的补充消息。
 pub(crate) struct PendingSteering {
@@ -290,13 +294,6 @@ pub(super) async fn manage(
             })
             .await
             .map_err(|error| CoreError::Config(error.to_string()))??;
-            let managers = std::mem::take(&mut *inner.mcp_managers.lock().await);
-            let old_cwds: Vec<std::path::PathBuf> = managers.keys().cloned().collect();
-            futures_util::future::join_all(managers.into_values().map(|manager| async move {
-                manager.shutdown().await;
-            }))
-            .await;
-            inner.mcp_config_errors.write().clear();
             // 改语言即时生效：此后 core 产出的用户面文案随新配置走，无需重启前端。
             if inner.config().language != resolved.language {
                 crate::i18n::init(&resolved.language);
@@ -313,14 +310,55 @@ pub(super) async fn manage(
             }
             // 清缓存后插件会重新激活并可能写入配置；激活完成后再取最终 revision。
             let _ = inner.project_plugins(Path::new(&cwd)).await;
-            // 配置重载后立刻重新预热并广播最新 MCP 状态（含清空已删除 server 的旧状态）。
+            // 只重建生效 MCP 配置实际发生变化的目录，避免保存其它设置时断开全部已有 MCP 连接。
             let current_key =
                 std::fs::canonicalize(Path::new(&cwd)).unwrap_or_else(|_| Path::new(&cwd).into());
-            inner.broadcast_mcp_snapshot(&current_key).await;
-            for old in old_cwds {
-                if old != current_key {
-                    inner.broadcast_mcp_snapshot(&old).await;
+            let mut affected_cwds = BTreeSet::new();
+            affected_cwds.insert(current_key);
+            affected_cwds.extend(inner.mcp_managers.lock().await.keys().cloned());
+            affected_cwds.extend(inner.mcp_config_errors.read().keys().cloned());
+            let base = inner.config();
+            let resolved_mcp: Vec<_> = affected_cwds
+                .into_iter()
+                .map(|key| {
+                    let next = base
+                        .for_project(&key)
+                        .and_then(|config| config.mcp_servers());
+                    (key, next)
+                })
+                .collect();
+            let mut to_shutdown = Vec::new();
+            let mut to_refresh = Vec::new();
+            {
+                let mut managers = inner.mcp_managers.lock().await;
+                let mut errors = inner.mcp_config_errors.write();
+                for (key, next) in resolved_mcp {
+                    let had_error = errors.contains_key(&key);
+                    let unchanged = match (&next, managers.get(&key)) {
+                        (Ok(servers), Some(existing)) if !had_error => {
+                            existing.matches_configs(servers)
+                        }
+                        (Ok(servers), None) if !had_error => servers.is_empty(),
+                        _ => false,
+                    };
+                    if unchanged {
+                        continue;
+                    }
+                    if let Some(old) = managers.remove(&key) {
+                        to_shutdown.push(old);
+                    }
+                    errors.remove(&key);
+                    to_refresh.push(key);
                 }
+            }
+            if !to_shutdown.is_empty() {
+                futures_util::future::join_all(to_shutdown.into_iter().map(|manager| async move {
+                    manager.shutdown().await;
+                }))
+                .await;
+            }
+            for key in to_refresh {
+                inner.broadcast_mcp_snapshot(&key).await;
             }
             let view = editor::inspect(&inner.boot, scope, Path::new(&cwd))?;
             super::plugin_persistence::settings(inner, Path::new(&cwd), view)
@@ -435,6 +473,98 @@ mod tests {
             .unwrap()
             .expect("保存配置成功");
         assert!(matches!(reply, ConfigReply::Settings(_)));
+
+        client.close().await;
+        connection.close();
+        connection.wait().await;
+        core.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn config_save_preserves_mcp_manager_unless_mcp_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let boot = CoreConfig {
+            home: root.path().join("home"),
+            cwd: root.path().join("work"),
+            user_home: Some(root.path().join("userhome")),
+            session_dir: Some(root.path().join("sessions")),
+            ..Default::default()
+        };
+        std::fs::create_dir_all(&boot.home).unwrap();
+        std::fs::create_dir_all(&boot.cwd).unwrap();
+        std::fs::write(
+            boot.home.join("config.toml"),
+            "[mcp.servers.demo]\ncommand = \"echo\"\nenabled = false\n",
+        )
+        .unwrap();
+        let cwd = boot.cwd.to_string_lossy().into_owned();
+        let core =
+            Core::new_with_sandbox_support(boot.clone(), crate::sandbox::SandboxSupport::full_only())
+                .unwrap();
+        let server = Server::new((*core).clone());
+        let (server_side, client_side) = transport::duplex(65536);
+        let connection = server.spawn(server_side);
+        let (client, _) = ClientBuilder::new(ClientInfo {
+            name: "MCP 配置差分回归".into(),
+            version: "1".into(),
+            frontend: "test".into(),
+        })
+        .connect(client_side)
+        .await
+        .unwrap();
+
+        let original = core.inner.project_mcp(&boot.cwd).await.unwrap();
+        assert!(!original.is_empty());
+
+        // 保存无关配置项时，现有 MCP 管理器应原样复用且不被关闭（避免改动全局语言影响并行测试）。
+        let mut view = editor::inspect(&boot, ConfigScope::Global, &boot.cwd).unwrap();
+        view.document
+            .as_object_mut()
+            .unwrap()
+            .insert("models".into(), serde_json::json!({ "recent": 9 }));
+        let reply = client
+            .call::<ConfigManage>(ConfigAction::Save {
+                scope: ConfigScope::Global,
+                cwd: cwd.clone(),
+                document: view.document,
+                revision: view.revision,
+            })
+            .await
+            .unwrap();
+        let ConfigReply::Settings(next_view) = reply else {
+            panic!("预期返回最新设置视图");
+        };
+        let after_unrelated = core.inner.project_mcp(&boot.cwd).await.unwrap();
+        assert!(
+            Arc::ptr_eq(&original, &after_unrelated),
+            "修改非 MCP 配置不应重建 MCP 管理器"
+        );
+        assert!(
+            !original.shutdown_token().is_cancelled(),
+            "修改非 MCP 配置不应关闭已有 MCP 管理器"
+        );
+
+        // 修改 [mcp] 生效配置时，旧管理器必须被关闭并替换为新实例。
+        let mut mcp_doc = next_view.document;
+        mcp_doc["mcp"]["connect_timeout_secs"] = serde_json::json!(45);
+        client
+            .call::<ConfigManage>(ConfigAction::Save {
+                scope: ConfigScope::Global,
+                cwd,
+                document: mcp_doc,
+                revision: next_view.revision,
+            })
+            .await
+            .unwrap();
+        let after_mcp_change = core.inner.project_mcp(&boot.cwd).await.unwrap();
+        assert!(
+            !Arc::ptr_eq(&original, &after_mcp_change),
+            "修改 MCP 配置后必须重建管理器"
+        );
+        assert!(
+            original.shutdown_token().is_cancelled(),
+            "修改 MCP 配置后旧管理器必须关闭"
+        );
 
         client.close().await;
         connection.close();

@@ -393,6 +393,23 @@ impl McpManager {
         ));
     }
 
+    /// 判断当前管理器的生效配置是否与 `servers` 完全一致。
+    ///
+    /// 前置条件：`servers` 按 `name` 严格升序排列且无重名（`moc_mcp::resolve_all` 从
+    /// `BTreeMap` 产出，天然满足该不变量），从而无需构造临时集合即可 O(n) 逐项比对。
+    pub fn matches_configs(&self, servers: &[ServerConfig]) -> bool {
+        debug_assert!(
+            servers.windows(2).all(|pair| pair[0].name < pair[1].name),
+            "servers must be strictly sorted by unique name"
+        );
+        self.slots.len() == servers.len()
+            && self
+                .slots
+                .values()
+                .zip(servers)
+                .all(|(slot, config)| slot.config == *config)
+    }
+
     /// 为尚未启动过的 enabled server 拉起监督任务。
     ///
     /// 已耗尽重连预算进入 `Failed` 的 server 不会由 `start()` 自动复活，

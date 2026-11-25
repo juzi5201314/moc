@@ -77,7 +77,7 @@ pub struct RawServerSpec {
 }
 
 /// 工具名过滤（glob 语法，匹配 server 内的原始工具名）；`deny` 永远优先。
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct ToolFilter {
     #[serde(default)]
     pub allow: Vec<String>,
@@ -107,6 +107,7 @@ impl ToolFilter {
                 McpError::Config(format!("tools.deny glob compilation failed: {error}"))
             })?,
             allow_empty: self.allow.is_empty(),
+            source: self.clone(),
         }))
     }
 }
@@ -125,7 +126,17 @@ pub struct CompiledToolFilter {
     allow: GlobSet,
     deny: GlobSet,
     allow_empty: bool,
+    /// 保留编译前的规则列表，用于配置保存时精确判断 MCP 过滤器是否发生变化。
+    source: ToolFilter,
 }
+
+impl PartialEq for CompiledToolFilter {
+    fn eq(&self, other: &Self) -> bool {
+        self.source == other.source
+    }
+}
+
+impl Eq for CompiledToolFilter {}
 
 impl CompiledToolFilter {
     /// `deny` 命中即拒绝；`allow` 非空时仅放行命中者。
@@ -138,7 +149,7 @@ impl CompiledToolFilter {
 }
 
 /// 传输方式。stdio 由本进程拉起子进程；HTTP 指向 Streamable HTTP 端点。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Transport {
     Stdio {
         command: String,
@@ -177,7 +188,7 @@ impl Transport {
 }
 
 /// 解析完成的单个 server 配置。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerConfig {
     pub name: String,
     pub transport: Transport,
