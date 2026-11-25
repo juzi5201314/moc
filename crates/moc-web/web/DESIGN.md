@@ -36,8 +36,8 @@
 
 **中性灰阶 + 单一强调色**。浅色基于 `#171717` 的透明度派生，深色基于白色透明度派生，叠在任何面上都能自然混色。
 
-- 面的层级（由低到高）：`chrome`（外框）< `sidebar` / `panel` < `background`（主舞台）< `card` / `popover`。
-  - 浅色：外框浅灰，侧栏和舞台近白，输入卡及浮层白色。
+- 面的层级（由低到高）：`chrome`（外框）< `panel` ≤ `sidebar` / `background`（侧栏与主舞台同底色）< `card` / `popover`。
+  - 浅色：外框浅灰，侧栏和主舞台同为近白（`#fcfcfc`），输入卡及浮层白色。
   - 深色：保留相同的明度阶梯；文字和焦点标记在每一级保持可见。
 - 文字三级：`foreground` → `muted-foreground` → `text-tertiary`。过程信息、时间戳、元数据用 tertiary。
 - 强调色 `brand`（浅 `#3b6ff5` / 深 `#6d97ff`）：选中、链接、进行中、品牌徽标。
