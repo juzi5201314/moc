@@ -1,12 +1,6 @@
 // Image Playground 会话对话视图：每一次消息是一次独立的 OpenAI Images API 调用。
 
-import {
-  AlertCircleIcon,
-  BookmarkPlusIcon,
-  CopyIcon,
-  RotateCcwIcon,
-  SquarePenIcon,
-} from "lucide-react";
+import { AlertCircleIcon, BookmarkPlusIcon, CopyIcon, RotateCcwIcon } from "lucide-react";
 import { useMemo } from "react";
 import { toast } from "sonner";
 import {
@@ -25,7 +19,7 @@ import {
   pgUploadUrl,
 } from "@/lib/image-playground-api";
 import { cn } from "@/lib/utils";
-import { useImagePlayground } from "@/store/image-playground";
+import { PLAYGROUND_DRAFT_ID, useImagePlayground } from "@/store/image-playground";
 import { formatFileSize, ImageCard } from "./image-card";
 import { PlaygroundComposer } from "./playground-composer";
 
@@ -43,46 +37,23 @@ function paramChips(params: ImageGenParams): string[] {
 export function PlaygroundChatView() {
   const t = useT();
   const activeSessionId = useImagePlayground((s) => s.activeSessionId);
+  const sessionId = activeSessionId ?? PLAYGROUND_DRAFT_ID;
   const session = useImagePlayground((s) =>
     s.activeSessionId ? s.sessionDetails[s.activeSessionId] : undefined,
   );
-  const running = useImagePlayground((s) =>
-    Boolean(s.activeSessionId && s.runningBySession[s.activeSessionId]),
+  const sessionSummary = useImagePlayground((s) =>
+    s.activeSessionId ? s.sessions.find((item) => item.id === s.activeSessionId) : undefined,
   );
-  const newSession = useImagePlayground((s) => s.newSession);
+  const running = useImagePlayground((s) => Boolean(s.runningBySession[sessionId]));
 
-  // 无会话时提供一键开始
-  if (!activeSessionId || !session) {
+  // 默认草稿态（尚未创建真实会话）或旧空会话：直接展示居中新建生成界面。
+  if (!activeSessionId || (session && session.turns.length === 0 && !running)) {
     return (
       <div className="flex h-full flex-1 flex-col">
         <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
-          <span className="text-sm font-medium text-foreground">Image Playground</span>
-        </header>
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
-          <h1 className="text-heading font-semibold text-foreground">Image Playground</h1>
-          <p className="max-w-md text-ui text-muted-foreground">{t("ip.welcome_desc")}</p>
-          <Button
-            size="sm"
-            onClick={() =>
-              void newSession().catch((err) =>
-                toast.error(t("ip.action_failed", { error: String(err) })),
-              )
-            }
-          >
-            <SquarePenIcon className="size-4" />
-            {t("ip.new_session")}
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
-  // 空会话：居中欢迎布局（复用 Agent 欢迎页风格）
-  if (session.turns.length === 0 && !running) {
-    return (
-      <div className="flex h-full flex-1 flex-col">
-        <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
-          <span className="truncate text-sm font-medium text-foreground">{session.title}</span>
+          <span className="truncate text-sm font-medium text-foreground">
+            {session?.title ?? "Image Playground"}
+          </span>
         </header>
         <div className="flex flex-1 flex-col items-center justify-center px-6 pb-12">
           <div className="w-full max-w-[688px] space-y-5">
@@ -90,9 +61,22 @@ export function PlaygroundChatView() {
               <h1 className="text-heading font-semibold text-foreground">Image Playground</h1>
               <p className="text-ui text-muted-foreground">{t("ip.welcome_desc")}</p>
             </div>
-            <PlaygroundComposer sessionId={activeSessionId} inline />
+            <PlaygroundComposer sessionId={sessionId} inline />
           </div>
         </div>
+      </div>
+    );
+  }
+
+  // 已选中历史会话、详情尚未拉回时保留顶栏，避免闪回新建界面。
+  if (!session) {
+    return (
+      <div className="flex h-full flex-1 flex-col">
+        <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
+          <span className="truncate text-sm font-medium text-foreground">
+            {sessionSummary?.title ?? "Image Playground"}
+          </span>
+        </header>
       </div>
     );
   }

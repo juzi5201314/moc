@@ -200,7 +200,6 @@ export function WorkspaceSidebar() {
   const list = useSessions((state) => state.list);
   const extra = useSessions((state) => state.extra);
   const workspaces = usePrefs((state) => state.workspaces);
-  const draft = useSessions((state) => state.draftSession);
   const active = useTabs((state) => state.active);
 
   const [query, setQuery] = useState("");
@@ -209,10 +208,10 @@ export function WorkspaceSidebar() {
   const [folded, setFolded] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  const groups = useMemo(() => {
-    const dirs = draft?.cwd ? [...workspaces, draft.cwd] : workspaces;
-    return groupWorkspaces(allSessions({ list, extra }), dirs, query);
-  }, [list, extra, workspaces, draft?.cwd, query]);
+  const groups = useMemo(
+    () => groupWorkspaces(allSessions({ list, extra }), workspaces, query),
+    [list, extra, workspaces, query],
+  );
 
   // 正文搜索补充标题/目录匹配不到的会话；标题已命中的不重复展示。
   const { hits: contentHits } = useSessionSearch(query, SEARCH_CONTENT_ITEMS);
@@ -334,7 +333,6 @@ export function WorkspaceSidebar() {
                   : VISIBLE_SESSIONS;
               const visible = group.sessions.slice(0, cap);
               const hidden = group.sessions.length - visible.length;
-              const hasDraft = draft?.cwd === group.cwd;
               return (
                 <div key={group.cwd} className="mb-2">
                   <div
@@ -374,21 +372,6 @@ export function WorkspaceSidebar() {
 
                   {!isFolded && (
                     <div className="mt-0.5 space-y-0.5">
-                      {hasDraft && (
-                        <button
-                          type="button"
-                          onClick={() => useTabs.getState().add("draft-session")}
-                          className={cn(
-                            ROW,
-                            "pl-[30px] text-ui",
-                            active === "draft-session"
-                              ? "bg-sidebar-accent text-sidebar-foreground"
-                              : "text-muted-foreground hover:bg-sidebar-accent",
-                          )}
-                        >
-                          <span className="truncate italic">{t("hd.new")}</span>
-                        </button>
-                      )}
                       {visible.map((session) => (
                         <SessionRow
                           key={session.id}
@@ -424,7 +407,7 @@ export function WorkspaceSidebar() {
                             {t("th.collapse")}
                           </button>
                         )}
-                      {!hasDraft && group.sessions.length === 0 && (
+                      {group.sessions.length === 0 && (
                         <div className="py-1.5 pl-[30px] text-ui text-text-tertiary">
                           {t("sb.no_sessions")}
                         </div>

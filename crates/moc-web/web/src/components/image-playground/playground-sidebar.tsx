@@ -148,8 +148,8 @@ export function PlaygroundSidebar() {
           <NavRow
             icon={<SparklesIcon />}
             label={t("ip.nav_generate")}
-            active={view === "generate"}
-            onClick={() => switchView("generate")}
+            active={view === "generate" && activeSessionId === null}
+            onClick={newSession}
           />
           <NavRow
             icon={<ImagesIcon />}
@@ -169,14 +169,7 @@ export function PlaygroundSidebar() {
 
         <div className="mt-3 flex h-8 items-center justify-between pl-2">
           <span className="text-xs text-text-tertiary">{t("ip.sessions")}</span>
-          <IconButton
-            label={t("ip.new_session")}
-            onClick={() =>
-              void newSession().catch((err) =>
-                toast.error(t("ip.action_failed", { error: String(err) })),
-              )
-            }
-          >
+          <IconButton label={t("ip.new_session")} onClick={newSession}>
             <SquarePenIcon />
           </IconButton>
         </div>

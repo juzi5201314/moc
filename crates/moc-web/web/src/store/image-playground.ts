@@ -65,12 +65,23 @@ export type PresetEditorState = {
   initialFolderId?: string | null;
 };
 
+/** 未发送生成前的本地新会话草稿 key，仅在真正触发生成时向服务端创建会话。 */
+export const PLAYGROUND_DRAFT_ID = "__draft__";
+
 const EMPTY_DRAFT: SessionDraft = {
   prompt: "",
   uploads: [],
   refImageIds: [],
   params: {},
 };
+
+/** 与服务端 `derive_title` 保持一致，避免新建会话在首轮生成期间短暂显示默认占位标题。 */
+function deriveDraftTitle(prompt: string): string | undefined {
+  const firstLine = (prompt.split(/\r?\n/, 1)[0] ?? prompt).trim();
+  if (!firstLine) return undefined;
+  const chars = [...firstLine];
+  return chars.length <= 28 ? firstLine : `${chars.slice(0, 28).join("")}…`;
+}
 
 const LAST_MODEL_KEY = "moc-image-pg-model";
 
@@ -113,7 +124,7 @@ export type ImagePlaygroundState = {
   updateConfig: (config: PlaygroundConfig) => Promise<void>;
   refreshImages: () => Promise<void>;
   selectSession: (id: string) => Promise<void>;
-  newSession: () => Promise<string>;
+  newSession: () => void;
   renameSession: (id: string, title: string) => Promise<void>;
   removeSession: (id: string) => Promise<void>;
 
@@ -122,7 +133,7 @@ export type ImagePlaygroundState = {
   removeUploadFile: (sessionId: string, uploadId: string) => void;
   toggleRefImage: (sessionId: string, imageId: string) => void;
   removeRefImage: (sessionId: string, imageId: string) => void;
-  editWithImage: (imageId: string) => Promise<void>;
+  editWithImage: (imageId: string) => void;
   applyFavoritePreset: (preset: FavoritePreset, targetSessionId?: string) => Promise<void>;
 
   submitGenerate: (sessionId: string) => Promise<void>;
@@ -351,7 +362,10 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
       mergeImages(mergeImages({}, gallery), favorites),
       favMeta.preset_images,
     );
-    const activeId = get().activeSessionId ?? sessions[0]?.id ?? null;
+    // 默认进入 Generate 的新建会话草稿态（activeSessionId = null）；仅当已显式打开某个仍存在的会话时保留。
+    const currentActive = get().activeSessionId;
+    const activeId =
+      currentActive && sessions.some((s) => s.id === currentActive) ? currentActive : null;
 
     set({
       models,
@@ -469,27 +483,8 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
     });
   },
 
-  newSession: async () => {
-    const model = get().selectedModel || undefined;
-    const detail = await createPgSession({ model });
-    const session = detail.session;
-    const summary: PlaygroundSessionSummary = {
-      id: session.id,
-      title: session.title,
-      created_at_ms: session.created_at_ms,
-      updated_at_ms: session.updated_at_ms,
-      model: session.model,
-      turn_count: 0,
-      image_count: 0,
-    };
-    set((state) => ({
-      sessions: [summary, ...state.sessions],
-      activeSessionId: session.id,
-      view: "generate",
-      sessionDetails: { ...state.sessionDetails, [session.id]: session },
-      drafts: { ...state.drafts, [session.id]: { ...EMPTY_DRAFT } },
-    }));
-    return session.id;
+  newSession: () => {
+    set({ activeSessionId: null, view: "generate" });
   },
 
   renameSession: async (id, title) => {
@@ -508,8 +503,7 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
     const resp = await deletePgSession(id, true);
     const removedIds = resp.removed_image_ids ?? [];
     const remaining = get().sessions.filter((s) => s.id !== id);
-    const nextActive =
-      get().activeSessionId === id ? (remaining[0]?.id ?? null) : get().activeSessionId;
+    const nextActive = get().activeSessionId === id ? null : get().activeSessionId;
     set((state) => {
       const details = { ...state.sessionDetails };
       delete details[id];
@@ -525,9 +519,6 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
       };
     });
     await get().refreshImages();
-    if (nextActive && !get().sessionDetails[nextActive]) {
-      await get().selectSession(nextActive);
-    }
   },
 
   updateDraft: (sessionId, updater) =>
@@ -576,14 +567,11 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
       refImageIds: prev.refImageIds.filter((id) => id !== imageId),
     })),
 
-  editWithImage: async (imageId) => {
+  editWithImage: (imageId) => {
     if (get().imagesById[imageId]?.format.toLowerCase() === "avif") return;
-    let sid = get().activeSessionId;
-    if (!sid) {
-      sid = await get().newSession();
-    }
-    set({ view: "generate", activeSessionId: sid, lightboxImageId: null });
-    get().updateDraft(sid, (prev) =>
+    const targetId = get().activeSessionId ?? PLAYGROUND_DRAFT_ID;
+    set({ view: "generate", lightboxImageId: null });
+    get().updateDraft(targetId, (prev) =>
       prev.refImageIds.includes(imageId)
         ? prev
         : { ...prev, refImageIds: [...prev.refImageIds, imageId] },
@@ -600,6 +588,62 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
     const files = draft.uploads.map((u) => u.file);
     const refIds = [...draft.refImageIds];
     const params = { ...draft.params };
+
+    if (sessionId === PLAYGROUND_DRAFT_ID) {
+      set((prev) => ({
+        runningBySession: { ...prev.runningBySession, [PLAYGROUND_DRAFT_ID]: true },
+      }));
+      let created: PlaygroundSession;
+      try {
+        const detail = await createPgSession({
+          title: deriveDraftTitle(prompt),
+          model,
+          params,
+        });
+        created = detail.session;
+      } catch (error) {
+        set((prev) => ({
+          runningBySession: { ...prev.runningBySession, [PLAYGROUND_DRAFT_ID]: false },
+        }));
+        throw error;
+      }
+
+      for (const u of draft.uploads) URL.revokeObjectURL(u.previewUrl);
+      const summary: PlaygroundSessionSummary = {
+        id: created.id,
+        title: created.title,
+        created_at_ms: created.created_at_ms,
+        updated_at_ms: created.updated_at_ms,
+        model: created.model,
+        turn_count: 0,
+        image_count: 0,
+      };
+      set((prev) => ({
+        sessions: [summary, ...prev.sessions],
+        activeSessionId: prev.activeSessionId === null ? created.id : prev.activeSessionId,
+        sessionDetails: { ...prev.sessionDetails, [created.id]: created },
+        drafts: {
+          ...prev.drafts,
+          [PLAYGROUND_DRAFT_ID]: { ...EMPTY_DRAFT, params },
+          [created.id]: { ...EMPTY_DRAFT, params },
+        },
+        runningBySession: {
+          ...prev.runningBySession,
+          [PLAYGROUND_DRAFT_ID]: false,
+          [created.id]: true,
+        },
+      }));
+
+      await executeGenerateRequest(created.id, {
+        prompt,
+        model,
+        params,
+        sourceImageIds: refIds,
+        sourceUploads: [],
+        files,
+      });
+      return;
+    }
 
     // 清空文本与临时上传（保留参数配置；引用图清空避免误带入下轮，收藏浮层随时可点选）。
     for (const u of draft.uploads) URL.revokeObjectURL(u.previewUrl);
@@ -642,13 +686,14 @@ export const useImagePlayground = create<ImagePlaygroundState>()((set, get) => (
   },
 
   cancelGenerate: async (sessionId) => {
+    if (sessionId === PLAYGROUND_DRAFT_ID) return;
     await cancelPgGenerate(sessionId);
   },
 
   applyFavoritePreset: async (preset, targetSessionId) => {
-    let sessionId = targetSessionId ?? get().activeSessionId;
-    if (!sessionId) {
-      sessionId = await get().newSession();
+    const sessionId = targetSessionId ?? get().activeSessionId ?? PLAYGROUND_DRAFT_ID;
+    if (sessionId === PLAYGROUND_DRAFT_ID) {
+      set({ activeSessionId: null, view: "generate" });
     } else if (!get().sessionDetails[sessionId]) {
       await get().selectSession(sessionId);
     } else {

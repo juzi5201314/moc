@@ -82,7 +82,7 @@ export function allSessions(state: Pick<SessionsState, "list" | "extra">): Sessi
 }
 
 /**
- * 按 cwd 分组。手动添加的目录与草稿所在目录即使还没有会话也列出；
+ * 按 cwd 分组。手动添加的目录即使还没有会话也列出；
  * 搜索时只保留标题或路径命中的会话。工作区按最近活动降序。
  */
 export function groupWorkspaces(
