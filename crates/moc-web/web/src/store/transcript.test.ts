@@ -13,7 +13,12 @@ vi.mock("@/protocol/client", () => ({
   clientListeners: { ready: new Set(), status: new Set(), handshakeError: new Set() },
 }));
 
-vi.mock("./prefs", () => ({ usePrefs: { getState: () => ({ workspaces: [] }) } }));
+vi.mock("./prefs", () => ({
+  usePrefs: {
+    getState: () => ({ workspaces: [], permission: "full", set: vi.fn() }),
+    subscribe: vi.fn(),
+  },
+}));
 
 import { rpc } from "@/protocol/client";
 import { ErrorCode, RpcError } from "@/protocol/errors";

@@ -330,12 +330,12 @@ export function runSlash(
       const rest = args.trim().toLowerCase();
       if (rest === "") {
         const current =
-          sessionId === "draft-session"
+          (sessionId === "draft-session"
             ? useSessions.getState().draftSession?.permission
-            : view?.info.permission;
+            : view?.info.permission) ?? "full";
         toast(
           t("slash.perm_current", {
-            label: current ? t(PERMISSION_LABEL[current]) : t("slash.perm_default"),
+            label: t(PERMISSION_LABEL[current]),
           }),
           {
             description: t("slash.usage", { usage: `/permission ${command.usage}` }),

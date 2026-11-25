@@ -42,42 +42,6 @@ export function clockTime(atMs: number): string {
   });
 }
 
-export type DiffLineItem = { kind: "equal" | "insert" | "delete"; text: string };
-export type SplitRow<T extends DiffLineItem = DiffLineItem> = { left?: T; right?: T };
-
-export function toSplitRows<T extends DiffLineItem>(lines: T[]): SplitRow<T>[] {
-  const rows: SplitRow<T>[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const cur = lines[i];
-    if (cur.kind === "equal") {
-      rows.push({ left: cur, right: cur });
-      i++;
-    } else if (cur.kind === "delete") {
-      // Collect consecutive deletes
-      const deletes: T[] = [];
-      while (i < lines.length && lines[i].kind === "delete") {
-        deletes.push(lines[i]);
-        i++;
-      }
-      // Collect consecutive inserts
-      const inserts: T[] = [];
-      while (i < lines.length && lines[i].kind === "insert") {
-        inserts.push(lines[i]);
-        i++;
-      }
-      const count = Math.max(deletes.length, inserts.length);
-      for (let k = 0; k < count; k++) {
-        rows.push({ left: deletes[k], right: inserts[k] });
-      }
-    } else if (cur.kind === "insert") {
-      rows.push({ left: undefined, right: cur });
-      i++;
-    }
-  }
-  return rows;
-}
-
 export type Breadcrumb = { name: string; path: string };
 
 export function breadcrumbs(path: string): Breadcrumb[] {

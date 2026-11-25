@@ -135,9 +135,9 @@ async function materialize(sessionId: string): Promise<string> {
     plan: draft?.plan,
     fast: draft?.fast,
   });
-  // session/new 不带权限与自主程度参数：草稿上改过的才在创建后补设。
+  // session/new 不带权限与自主程度参数：与核心返回值不同时在创建后补设。
   const tasks: Promise<void>[] = [];
-  if (draft?.permission && draft.permission !== info.permission) {
+  if (draft && draft.permission !== info.permission) {
     tasks.push(setSessionPermission(info.id, draft.permission));
   }
   if (draft && draft.autonomy !== info.autonomy) {

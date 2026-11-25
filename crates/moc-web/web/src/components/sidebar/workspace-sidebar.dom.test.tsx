@@ -98,6 +98,7 @@ it("新建草稿会话不在左侧工作区列表占位，真正创建会话后�
       autonomy: "default",
       plan: false,
       fast: false,
+      permission: "full",
     },
   });
   useTabs.setState({ open: ["draft-session"], active: "draft-session" });

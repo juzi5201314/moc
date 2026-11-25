@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 4e27c01e9f213b22
+// schema sha256: 8c057eaabace3afd
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -1210,11 +1210,6 @@ export type UsageSource = "session" | "sidekick" | "subagent";
  * via the `definition` "WebDetailLevel".
  */
 export type WebDetailLevel = "hidden" | "brief" | "full";
-/**
- * This interface was referenced by `ProtocolTypes`'s JSON-Schema
- * via the `definition` "WebDiffMode".
- */
-export type WebDiffMode = "unified" | "split";
 /**
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
  * via the `definition` "WebSubmitAction".
@@ -6179,13 +6174,13 @@ export interface WebState {
    */
   active_submit?: "steering" | "interrupt";
   /**
-   * 内联 diff 的展示方式。
-   */
-  diff_mode?: "unified" | "split";
-  /**
    * 后台中弹出需要处理的授权/提问时，发一条系统通知。
    */
   notify?: boolean;
+  /**
+   * 会话命令执行权限。
+   */
+  permission?: ("full" | "workspace") | "workspace_only";
   /**
    * 运行中互换 Enter 与 Ctrl+Enter：`true` 时 Enter 排队，Ctrl+Enter 按 `active_submit` 发送。
    */

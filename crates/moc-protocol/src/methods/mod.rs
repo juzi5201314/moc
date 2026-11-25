@@ -169,8 +169,8 @@ pub use update::{
     ToolPreviewContent, ToolPreviewResolution, UpstreamField, UpstreamFieldMismatch,
 };
 pub use web::{
-    WebDetailLevel, WebDiffMode, WebState, WebStateDocument, WebStateGet, WebStateGetParams,
-    WebStateSave, WebStateSaveParams, WebStateUpdated, WebSubmitAction, WebTheme,
+    WebDetailLevel, WebState, WebStateDocument, WebStateGet, WebStateGetParams, WebStateSave,
+    WebStateSaveParams, WebStateUpdated, WebSubmitAction, WebTheme,
 };
 pub use workflow::{
     SessionWorkflowActivate, SessionWorkflowActivateParams, SessionWorkflowApprove,

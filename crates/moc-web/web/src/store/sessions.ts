@@ -11,7 +11,7 @@ import type {
   SessionPermission,
 } from "@/protocol/types";
 
-/** 本地草稿会话上用户显式选过的参数；未选的项交给 core 默认值。 */
+/** 本地草稿会话的参数；权限默认沿用上次记忆（初始 `full`），不存在 Default 态。 */
 export type DraftSession = {
   cwd: string;
   model?: string;
@@ -19,7 +19,9 @@ export type DraftSession = {
   autonomy: SessionAutonomy;
   plan: boolean;
   fast: boolean;
-  permission?: SessionPermission;
+  permission: SessionPermission;
+  /** 本草稿是否已被用户显式切过权限；未切过时随 web.toml 读回同步更新。 */
+  permissionTouched?: boolean;
 };
 
 export type Workspace = {

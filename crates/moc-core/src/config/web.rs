@@ -31,8 +31,10 @@ pub fn load(home: &Path) -> Result<WebStateDocument, CoreError> {
     })
 }
 
-/// 解析状态文件；旧版的 `expand_thinking = bool` 换算成 `thinking_detail`
-/// （展开 → `full`，折叠 → `brief`），下次保存时自然写成新格式。
+/// 解析状态文件：
+/// - 旧版的 `expand_thinking = bool` 换算成 `thinking_detail`（展开 → `full`，折叠 → `brief`）；
+/// - 已移除的 `diff_mode` 直接丢弃（界面固定为统一 diff）；
+/// 下次保存时自然写成新格式。
 fn parse(text: &str) -> Result<WebState, toml::de::Error> {
     let mut table: toml::Table = toml::from_str(text)?;
     if let Some(toml::Value::Boolean(expand)) = table.remove("expand_thinking") {
@@ -41,6 +43,7 @@ fn parse(text: &str) -> Result<WebState, toml::de::Error> {
             .entry("thinking_detail")
             .or_insert_with(|| level.into());
     }
+    table.remove("diff_mode");
     toml::Value::Table(table).try_into()
 }
 
@@ -69,7 +72,7 @@ pub fn save(home: &Path, params: WebStateSaveParams) -> Result<WebStateDocument,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use moc_protocol::{WebDetailLevel, WebSubmitAction, WebTheme};
+    use moc_protocol::{SessionPermission, WebDetailLevel, WebSubmitAction, WebTheme};
 
     fn save_params(revision: &str, state: WebState) -> WebStateSaveParams {
         WebStateSaveParams {
@@ -87,12 +90,17 @@ mod tests {
     }
 
     #[test]
-    fn legacy_expand_thinking_maps_to_thinking_detail() {
+    fn legacy_fields_migrate_or_ignore_cleanly() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("web.toml");
-        std::fs::write(&path, "theme = \"dark\"\nexpand_thinking = true\n").unwrap();
+        std::fs::write(
+            &path,
+            "theme = \"dark\"\nexpand_thinking = true\ndiff_mode = \"split\"\n",
+        )
+        .unwrap();
         let state = load(root.path()).unwrap().state;
         assert_eq!(state.theme, WebTheme::Dark);
+        assert_eq!(state.permission, SessionPermission::Full);
         assert_eq!(state.thinking_detail, WebDetailLevel::Full);
         assert_eq!(state.tool_detail, WebDetailLevel::Brief);
 
@@ -116,6 +124,7 @@ mod tests {
         let state = WebState {
             theme: WebTheme::Dark,
             active_submit: WebSubmitAction::Interrupt,
+            permission: SessionPermission::Workspace,
             workspaces: vec!["/repo".into()],
             ..WebState::default()
         };
@@ -125,6 +134,7 @@ mod tests {
         let reloaded = load(root.path()).unwrap();
         assert_eq!(reloaded.state.theme, WebTheme::Dark);
         assert_eq!(reloaded.state.active_submit, WebSubmitAction::Interrupt);
+        assert_eq!(reloaded.state.permission, SessionPermission::Workspace);
         assert_eq!(reloaded.state.workspaces, ["/repo".to_owned()]);
         assert_eq!(
             std::fs::read_to_string(root.path().join("config.toml")).unwrap(),

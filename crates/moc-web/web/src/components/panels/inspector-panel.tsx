@@ -2,14 +2,12 @@
 // 计数徽标只保留 changes；需要远端数据的分页只在打开时拉取。
 
 import {
-  Columns2Icon,
   FolderIcon,
   GitCompareArrowsIcon,
   type LucideIcon,
   MessagesSquareIcon,
   PanelRightIcon,
   PlusIcon,
-  RowsIcon,
   SquareTerminalIcon,
 } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -20,7 +18,6 @@ import { type MsgKey, useI18n, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { ToolFileDiff } from "@/protocol/types";
 import { type InspectorTab, useLayout } from "@/store/layout";
-import { usePrefs } from "@/store/prefs";
 import { useTranscript } from "@/store/transcript";
 import { BtwTab, PanelEmpty } from "./inspector-tabs";
 import { LauncherTab } from "./launcher-tab";
@@ -175,7 +172,6 @@ function ChangesTab({ sessionId }: { sessionId: string }) {
   const t = useT();
   const diffs = useTranscript((state) => state.bySession[sessionId]?.diffs);
   const cwd = useTranscript((state) => state.bySession[sessionId]?.info.cwd);
-  const diffMode = usePrefs((state) => state.diffMode);
   const files = useMemo(() => {
     const byPath = new Map<string, ToolFileDiff>();
     for (const record of diffs ?? []) {
@@ -197,20 +193,6 @@ function ChangesTab({ sessionId }: { sessionId: string }) {
         <span className="text-xs font-medium text-muted-foreground">
           {t("cp.files_n", { n: files.length })}
         </span>
-        <div className="flex items-center gap-0.5">
-          {(["unified", "split"] as const).map((mode) => (
-            <IconButton
-              key={mode}
-              label={mode === "unified" ? t("insp.unified") : t("insp.split")}
-              size="xs"
-              active={diffMode === mode}
-              onClick={() => usePrefs.getState().set({ diffMode: mode })}
-              className="size-6"
-            >
-              {mode === "unified" ? <RowsIcon /> : <Columns2Icon />}
-            </IconButton>
-          ))}
-        </div>
       </div>
       <div className="space-y-2 px-3 pb-4">
         {files.map((file) => (

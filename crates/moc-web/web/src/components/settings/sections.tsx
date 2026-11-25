@@ -194,16 +194,6 @@ export function GeneralSection() {
               options={TOOL_DETAIL_OPTIONS.map((option) => ({ ...option, label: t(option.label) }))}
             />
           </SettingRow>
-          <SettingRow label={t("ss.diff")} description={t("ss.diff_desc")}>
-            <Segmented
-              value={prefs.diffMode}
-              onChange={(diffMode) => prefs.set({ diffMode })}
-              options={[
-                { value: "unified", label: t("ss.diff_unified") },
-                { value: "split", label: t("ss.diff_split") },
-              ]}
-            />
-          </SettingRow>
         </Card>
       </section>
 

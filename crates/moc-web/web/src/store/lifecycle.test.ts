@@ -2,19 +2,55 @@ import { afterEach, expect, it, vi } from "vitest";
 import type {
   ConfigGetResult,
   SessionInfo,
+  SessionPermission,
   SkillsCompactResult,
   SkillsProgressParams,
 } from "@/protocol/types";
+
+const prefsMock = vi.hoisted(() => {
+  type State = {
+    workspaces: string[];
+    permission: SessionPermission;
+    set: (patch: Partial<{ workspaces: string[]; permission: SessionPermission }>) => void;
+  };
+  const listeners = new Set<(state: State, prev: State) => void>();
+  const update = (patch: Partial<{ workspaces: string[]; permission: SessionPermission }>) => {
+    const prev = { ...state };
+    Object.assign(state, patch);
+    for (const listener of listeners) listener(state, prev);
+  };
+  const state: State = {
+    workspaces: [],
+    permission: "full",
+    set: vi.fn(update),
+  };
+  return { state, listeners, update };
+});
 
 vi.mock("@/protocol/client", () => ({
   rpc: { on: vi.fn(), onRequest: vi.fn(), call: vi.fn() },
   clientListeners: { ready: new Set(), status: new Set(), handshakeError: new Set() },
 }));
-vi.mock("./prefs", () => ({ usePrefs: { getState: () => ({ workspaces: [] }) } }));
+vi.mock("./prefs", () => ({
+  usePrefs: {
+    getState: () => prefsMock.state,
+    subscribe: (
+      listener: (state: typeof prefsMock.state, prev: typeof prefsMock.state) => void,
+    ) => {
+      prefsMock.listeners.add(listener);
+      return () => prefsMock.listeners.delete(listener);
+    },
+  },
+}));
 
 import { rpc } from "@/protocol/client";
 import { useConnection } from "./connection";
-import { compactSkills, createQuickSession, setSessionModel } from "./lifecycle";
+import {
+  compactSkills,
+  createQuickSession,
+  setSessionModel,
+  setSessionPermission,
+} from "./lifecycle";
 import { useSessions } from "./sessions";
 import { useTabs } from "./tabs";
 import { useTranscript } from "./transcript";
@@ -48,7 +84,10 @@ afterEach(() => {
   useTranscript.setState({ bySession: {} });
   useConnection.setState({ config: null, status: "offline" });
   useUi.setState({ skillsWorking: null });
-  vi.resetAllMocks();
+  prefsMock.state.workspaces = [];
+  prefsMock.state.permission = "full";
+  vi.clearAllMocks();
+  vi.mocked(prefsMock.state.set).mockImplementation(prefsMock.update);
 });
 
 it("打开旧会话后新建草稿仍使用 core 的最近模型", () => {
@@ -137,4 +176,39 @@ it("草稿技能状态原位更新，结束后保留且后续失败不覆盖先�
   expect(rpc.call).not.toHaveBeenCalledWith("session/new", expect.anything());
   expect(rpc.call).not.toHaveBeenCalledWith("session/prompt", expect.anything());
   expect(useTabs.getState().active).toBe(draft.id);
+});
+
+it("新草稿权限默认 full，记住上次切换，且未改动草稿会同步延迟加载的偏好", async () => {
+  useConnection.setState({ config });
+  const initial = createQuickSession();
+  expect(initial.permission).toBe("full");
+  expect(useSessions.getState().draftSession?.permission).toBe("full");
+
+  // 模拟 web.toml 在首屏草稿创建之后读回：未主动改过的草稿自动同步。
+  prefsMock.update({ permission: "workspace" });
+  expect(useSessions.getState().draftSession?.permission).toBe("workspace");
+  expect(useTranscript.getState().bySession["draft-session"].info.permission).toBe("workspace");
+
+  // 在草稿主动切换权限后，持久化到偏好且不再被外来偏好更新覆盖。
+  await setSessionPermission("draft-session", "workspace_only");
+  expect(prefsMock.state.set).toHaveBeenCalledWith({ permission: "workspace_only" });
+  expect(useSessions.getState().draftSession?.permission).toBe("workspace_only");
+  prefsMock.update({ permission: "full" });
+  expect(useSessions.getState().draftSession?.permission).toBe("workspace_only");
+
+  // 在真实会话主动切换权限成功后记住该选择；clearGrants 不改记忆。
+  useTranscript.getState().ensureView(previous);
+  vi.mocked(rpc.call).mockResolvedValueOnce({ ...previous, permission: "workspace" });
+  await setSessionPermission(previous.id, "workspace");
+  expect(prefsMock.state.permission).toBe("workspace");
+
+  vi.mocked(prefsMock.state.set).mockClear();
+  vi.mocked(rpc.call).mockResolvedValueOnce({ ...previous, permission: "workspace" });
+  await setSessionPermission(previous.id, "workspace", true);
+  expect(prefsMock.state.set).not.toHaveBeenCalled();
+
+  // 下次新建草稿沿用上次记住的权限。
+  const next = createQuickSession();
+  expect(next.permission).toBe("workspace");
+  expect(useSessions.getState().draftSession?.permission).toBe("workspace");
 });

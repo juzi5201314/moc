@@ -14,7 +14,6 @@ import {
   RefreshCwIcon,
   ShieldAlertIcon,
   ShieldCheckIcon,
-  ShieldIcon,
   TerminalIcon,
   XIcon,
 } from "lucide-react";
@@ -579,7 +578,7 @@ const PERMISSIONS: {
   id: SessionPermission;
   label: MsgKey;
   description: MsgKey;
-  icon: typeof ShieldIcon;
+  icon: typeof ShieldAlertIcon;
 }[] = [
   {
     id: "full",
@@ -612,12 +611,11 @@ export function SessionOptions({ sessionId, disabled }: { sessionId: string; dis
   const info = useTranscript((state) => state.bySession[sessionId]?.info);
   const draft = useSessions((state) => state.draftSession);
   const isDraft = sessionId === "draft-session";
-  // 草稿没选过权限时由 core 按 `[sandbox].default_mode` 决定，这里不臆测。
-  const permission = isDraft ? draft?.permission : info?.permission;
-  const current = PERMISSIONS.find((item) => item.id === permission);
+  const permission = (isDraft ? draft?.permission : info?.permission) ?? "full";
+  const current = PERMISSIONS.find((item) => item.id === permission) ?? PERMISSIONS[0];
   const engine = ENGINES.find((item) => item.id === info?.engine) ?? ENGINES[0];
   const autonomy = AUTONOMY.find((item) => item.id === info?.autonomy) ?? AUTONOMY[0];
-  const Icon = current?.icon ?? ShieldIcon;
+  const Icon = current.icon;
 
   const run = (action: Promise<void>) =>
     void action.catch((error) => toast.error(t("sc.switch_failed", { error: errorText(error) })));
@@ -627,7 +625,7 @@ export function SessionOptions({ sessionId, disabled }: { sessionId: string; dis
       <DropdownMenuTrigger asChild>
         <button type="button" disabled={disabled} className={CHIP} aria-label={t("cp.options")}>
           <Icon className="size-3.5 shrink-0" />
-          <span className="truncate">{current ? t(current.label) : t("cp.perm_default")}</span>
+          <span className="truncate">{t(current.label)}</span>
           {autonomy.id !== "default" && (
             <span className="truncate text-text-tertiary">· {t(autonomy.label)}</span>
           )}
@@ -647,7 +645,7 @@ export function SessionOptions({ sessionId, disabled }: { sessionId: string; dis
             icon={<item.icon className="size-4" />}
             label={t(item.label)}
             description={t(item.description)}
-            selected={item.id === permission}
+            selected={item.id === current.id}
             onSelect={() => run(setSessionPermission(sessionId, item.id))}
           />
         ))}

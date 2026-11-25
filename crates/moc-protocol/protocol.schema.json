@@ -8669,13 +8669,6 @@
       ],
       "type": "string"
     },
-    "WebDiffMode": {
-      "enum": [
-        "unified",
-        "split"
-      ],
-      "type": "string"
-    },
     "WebState": {
       "additionalProperties": false,
       "description": "`web.toml` 的内容：字段名与 `tui.toml` 的对应项保持同一套词汇。",
@@ -8685,15 +8678,15 @@
           "default": "steering",
           "description": "会话运行中按 Enter：`steering` 并入当前提示，`interrupt` 先停下再提问。"
         },
-        "diff_mode": {
-          "$ref": "#/$defs/WebDiffMode",
-          "default": "unified",
-          "description": "内联 diff 的展示方式。"
-        },
         "notify": {
           "default": false,
           "description": "后台中弹出需要处理的授权/提问时，发一条系统通知。",
           "type": "boolean"
+        },
+        "permission": {
+          "$ref": "#/$defs/SessionPermission",
+          "default": "full",
+          "description": "新建会话默认使用的命令执行权限；记住用户上次主动选择，初始默认 `full`。"
         },
         "queue_on_enter": {
           "default": false,

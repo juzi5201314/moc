@@ -12,6 +12,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::SessionPermission;
 use crate::method::{ClientRequest, Method, ServerNotification};
 
 /// `web/state`。
@@ -66,8 +67,8 @@ pub struct WebState {
     pub queue_on_enter: bool,
     /// 后台中弹出需要处理的授权/提问时，发一条系统通知。
     pub notify: bool,
-    /// 内联 diff 的展示方式。
-    pub diff_mode: WebDiffMode,
+    /// 新建会话默认使用的命令执行权限；记住用户上次主动选择，初始默认 `full`。
+    pub permission: SessionPermission,
     /// 思考块的显示档位：隐藏只留标题行，简略显示末尾预览，完整显示全文。
     pub thinking_detail: WebDetailLevel,
     /// 工具块的显示档位：隐藏只留标题行，简略按工具给少量预览，完整显示全部输出。
@@ -83,7 +84,7 @@ impl Default for WebState {
             active_submit: WebSubmitAction::Steering,
             queue_on_enter: false,
             notify: false,
-            diff_mode: WebDiffMode::Unified,
+            permission: SessionPermission::Full,
             thinking_detail: WebDetailLevel::Brief,
             tool_detail: WebDetailLevel::Brief,
             workspaces: Vec::new(),
@@ -106,14 +107,6 @@ pub enum WebSubmitAction {
     #[default]
     Steering,
     Interrupt,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum WebDiffMode {
-    #[default]
-    Unified,
-    Split,
 }
 
 /// 思考块 / 工具块的显示档位，与 `tui.toml` 的 `thinking_detail`、`tool_detail` 同义。
@@ -174,7 +167,7 @@ mod tests {
                 active_submit: WebSubmitAction::Interrupt,
                 queue_on_enter: true,
                 notify: true,
-                diff_mode: WebDiffMode::Split,
+                permission: SessionPermission::Workspace,
                 thinking_detail: WebDetailLevel::Full,
                 tool_detail: WebDetailLevel::Hidden,
                 workspaces: vec!["/repo".into()],
@@ -190,7 +183,7 @@ mod tests {
                     "active_submit": "interrupt",
                     "queue_on_enter": true,
                     "notify": true,
-                    "diff_mode": "split",
+                    "permission": "workspace",
                     "thinking_detail": "full",
                     "tool_detail": "hidden",
                     "workspaces": ["/repo"],

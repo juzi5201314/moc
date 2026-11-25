@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DiffLine } from "@/protocol/types";
-import { breadcrumbs, toSplitRows } from "./format";
+import { breadcrumbs } from "./format";
 import { choiceDisplay, formatField, getPath, parseField, setPath } from "./settings-doc";
 
 describe("settings document paths", () => {
@@ -64,25 +63,6 @@ describe("field parsing", () => {
   it("shows choice labels once when equal to the value", () => {
     expect(choiceDisplay({ value: "on", label: "on" })).toBe("on");
     expect(choiceDisplay({ value: "on", label: "On" })).toBe("On (on)");
-  });
-});
-
-describe("diff split rows", () => {
-  it("pairs delete runs with following inserts", () => {
-    const line = (kind: DiffLine["kind"], text: string): DiffLine => ({ kind, text });
-    const rows = toSplitRows([
-      line("equal", "a"),
-      line("delete", "b"),
-      line("delete", "c"),
-      line("insert", "B"),
-      line("equal", "d"),
-    ]);
-    expect(rows.map((row) => [row.left?.text, row.right?.text])).toEqual([
-      ["a", "a"],
-      ["b", "B"],
-      ["c", undefined],
-      ["d", "d"],
-    ]);
   });
 });
 

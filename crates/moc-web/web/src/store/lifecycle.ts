@@ -402,7 +402,7 @@ export function createQuickSession(targetCwd?: string): SessionInfo {
       ? useTranscript.getState().bySession[activeId]?.info
       : undefined;
   const { list } = useSessions.getState();
-  const { workspaces } = usePrefs.getState();
+  const { workspaces, permission } = usePrefs.getState();
   const config = useConnection.getState().config;
   const cwd = targetCwd ?? activeInfo?.cwd ?? workspaces[0] ?? list[0]?.cwd ?? config?.cwd ?? "";
   // 新会话采用 core 的最近选择，打开旧会话不会改变它。
@@ -420,15 +420,19 @@ export function createQuickSession(targetCwd?: string): SessionInfo {
     plan_active: false,
     fast_mode: fast,
     engine_locked: false,
-    // 草稿的权限展示读 DraftSession.permission；这里只是占位，不会发给 core。
-    permission: "workspace",
+    permission,
     created_at_ms: now,
     updated_at_ms: now,
   };
 
-  useSessions
-    .getState()
-    .setDraftSession({ cwd, engine: "standard", autonomy: "default", plan: false, fast });
+  useSessions.getState().setDraftSession({
+    cwd,
+    engine: "standard",
+    autonomy: "default",
+    plan: false,
+    fast,
+    permission,
+  });
   useTranscript.getState().drop(draftInfo.id);
   useTranscript.getState().ensureView(draftInfo);
   useTabs.getState().add(draftInfo.id);
@@ -509,16 +513,21 @@ export async function setSessionPermission(
   clearGrants = false,
 ): Promise<void> {
   if (sessionId === "draft-session") {
-    patchDraft({ permission }, { permission });
+    patchDraft({ permission, permissionTouched: true }, { permission });
+    if (usePrefs.getState().permission !== permission) {
+      usePrefs.getState().set({ permission });
+    }
     return;
   }
-  applyInfo(
-    await rpc.call<SessionInfo>("session/set_permission", {
-      session_id: sessionId,
-      permission,
-      clear_grants: clearGrants,
-    }),
-  );
+  const info = await rpc.call<SessionInfo>("session/set_permission", {
+    session_id: sessionId,
+    permission,
+    clear_grants: clearGrants,
+  });
+  applyInfo(info);
+  if (!clearGrants && usePrefs.getState().permission !== info.permission) {
+    usePrefs.getState().set({ permission: info.permission });
+  }
 }
 
 /** 切换模型（selector 可带 `:level`）；返回 core 的容量检查结果供调用方提示。 */
@@ -730,6 +739,14 @@ useConnection.subscribe((state, previous) => {
     useTranscript.getState().mutate("draft-session", (view) => {
       view.info.model = state.config?.default_model ?? "";
     });
+  }
+});
+
+usePrefs.subscribe((state, previous) => {
+  if (state.permission === previous.permission) return;
+  const draft = useSessions.getState().draftSession;
+  if (draft && !draft.permissionTouched) {
+    patchDraft({ permission: state.permission }, { permission: state.permission });
   }
 });
 

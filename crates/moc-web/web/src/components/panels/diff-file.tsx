@@ -1,12 +1,9 @@
-// 单文件 diff：工具详情、检查面板「变更」与计划版本对比共用。
-// 统一视图按 hunk 排列；并排视图把相邻的删/增行配对到左右两栏。
+// 单文件 diff：工具详情、检查面板「变更」与计划版本对比共用，固定按 hunk 渲染统一视图。
 
 import { ChevronRightIcon, FileCodeIcon } from "lucide-react";
-import { useMemo, useState } from "react";
-import { toSplitRows } from "@/lib/format";
+import { useState } from "react";
 import { cn } from "@/lib/utils";
 import type { DiffLine, ToolFileDiff } from "@/protocol/types";
-import { type DiffMode, usePrefs } from "@/store/prefs";
 
 export function diffStats(file: ToolFileDiff): { added: number; removed: number } {
   let added = 0;
@@ -49,16 +46,6 @@ const SIGN: Record<DiffLine["kind"], string> = { insert: "+", delete: "-", equal
 // core 保证：delete/equal 必有 old_no，insert/equal 必有 new_no，同一 hunk 内二者组合唯一。
 const lineKey = (line?: DiffLine) => `${line?.old_no ?? ""}:${line?.new_no ?? ""}`;
 
-function SplitCell({ cell }: { cell?: DiffLine }) {
-  return (
-    <div
-      className={cn("min-w-0 overflow-hidden whitespace-pre px-3", cell && LINE_TONE[cell.kind])}
-    >
-      {cell?.text || " "}
-    </div>
-  );
-}
-
 function UnifiedHunk({ lines }: { lines: DiffLine[] }) {
   return (
     <>
@@ -95,34 +82,7 @@ function UnifiedHunk({ lines }: { lines: DiffLine[] }) {
   );
 }
 
-function SplitHunk({ lines }: { lines: DiffLine[] }) {
-  const rows = useMemo(() => toSplitRows(lines), [lines]);
-  return (
-    <>
-      {rows.map((row) => (
-        <div
-          key={`${lineKey(row.left)}|${lineKey(row.right)}`}
-          className="grid grid-cols-2 divide-x divide-border-subtle"
-        >
-          <SplitCell cell={row.left} />
-          <SplitCell cell={row.right} />
-        </div>
-      ))}
-    </>
-  );
-}
-
-export function DiffBody({
-  file,
-  mode,
-  maxHeight,
-}: {
-  file: ToolFileDiff;
-  mode?: DiffMode;
-  maxHeight?: number;
-}) {
-  const preferred = usePrefs((state) => state.diffMode);
-  const effective = mode ?? preferred;
+export function DiffBody({ file, maxHeight }: { file: ToolFileDiff; maxHeight?: number }) {
   return (
     <div
       className="overflow-auto bg-code py-1 font-mono text-xs leading-[20px]"
@@ -135,11 +95,7 @@ export function DiffBody({
               @@ -{hunk.old_start} +{hunk.new_start} @@
             </div>
           )}
-          {effective === "split" ? (
-            <SplitHunk lines={hunk.lines} />
-          ) : (
-            <UnifiedHunk lines={hunk.lines} />
-          )}
+          <UnifiedHunk lines={hunk.lines} />
         </div>
       ))}
     </div>

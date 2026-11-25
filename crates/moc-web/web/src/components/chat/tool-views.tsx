@@ -376,7 +376,7 @@ function DiffCard({
     return (
       <div className="overflow-hidden rounded-xl bg-code">
         {preview.diff.files.map((file) => (
-          <DiffBody key={file.path} file={file} mode="unified" />
+          <DiffBody key={file.path} file={file} />
         ))}
         {preview.hidden > 0 && (
           <div className="pb-1">

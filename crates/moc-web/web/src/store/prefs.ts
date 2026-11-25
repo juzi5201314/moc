@@ -10,12 +10,16 @@ import { toast } from "sonner";
 import { create } from "zustand";
 import { t } from "@/lib/i18n";
 import { clientListeners, rpc } from "@/protocol/client";
-import type { WebDetailLevel, WebState, WebStateDocument } from "@/protocol/types";
+import type {
+  SessionPermission,
+  WebDetailLevel,
+  WebState,
+  WebStateDocument,
+} from "@/protocol/types";
 
 export type Theme = "system" | "light" | "dark";
 /** 运行中按 Enter：插队补充到当前提示（steer），或中断后作为下一条提示（interrupt）。 */
 export type RunningEnter = "steer" | "interrupt";
-export type DiffMode = "unified" | "split";
 
 export type Prefs = {
   theme: Theme;
@@ -23,7 +27,8 @@ export type Prefs = {
   /** 运行中互换 Enter 与 Ctrl+Enter：Enter 排队，Ctrl+Enter 按 runningEnter 发送。 */
   queueOnEnter: boolean;
   notify: boolean;
-  diffMode: DiffMode;
+  /** 新建会话默认使用的命令执行权限；记住上次选择，初始默认 `full`。 */
+  permission: SessionPermission;
   /** 思考块显示档位。 */
   thinkingDetail: WebDetailLevel;
   /** 工具块显示档位。 */
@@ -75,7 +80,7 @@ function toWire(prefs: Prefs, workspaces: string[]): WebState {
     active_submit: prefs.runningEnter === "steer" ? "steering" : "interrupt",
     queue_on_enter: prefs.queueOnEnter,
     notify: prefs.notify,
-    diff_mode: prefs.diffMode,
+    permission: prefs.permission,
     thinking_detail: prefs.thinkingDetail,
     tool_detail: prefs.toolDetail,
     workspaces,
@@ -89,7 +94,7 @@ function fromWire(state: WebState): Prefs {
     runningEnter: state.active_submit === "interrupt" ? "interrupt" : "steer",
     queueOnEnter: state.queue_on_enter ?? false,
     notify: state.notify ?? false,
-    diffMode: state.diff_mode ?? "unified",
+    permission: state.permission ?? "full",
     thinkingDetail: state.thinking_detail ?? "brief",
     toolDetail: state.tool_detail === "hidden" ? "hidden" : "brief",
   };
@@ -128,7 +133,7 @@ async function sync(): Promise<void> {
     runningEnter,
     queueOnEnter,
     notify,
-    diffMode,
+    permission,
     thinkingDetail,
     toolDetail,
   } = usePrefs.getState();
@@ -136,7 +141,7 @@ async function sync(): Promise<void> {
     const doc = await rpc.call<WebStateDocument>("web/state_save", {
       revision,
       state: toWire(
-        { theme, runningEnter, queueOnEnter, notify, diffMode, thinkingDetail, toolDetail },
+        { theme, runningEnter, queueOnEnter, notify, permission, thinkingDetail, toolDetail },
         workspaces,
       ),
     });
@@ -165,9 +170,6 @@ function readLegacy(): { prefs: Partial<Prefs>; workspaces: string[] } {
       prefs.runningEnter = state.runningEnter;
     }
     if (typeof state.notify === "boolean") prefs.notify = state.notify;
-    if (state.diffMode === "unified" || state.diffMode === "split") {
-      prefs.diffMode = state.diffMode;
-    }
     if (typeof state.expandThinking === "boolean") {
       prefs.thinkingDetail = state.expandThinking ? "full" : "brief";
     }
@@ -230,7 +232,7 @@ export const usePrefs = create<PrefsStore>()((set, get) => ({
   runningEnter: "steer",
   queueOnEnter: false,
   notify: false,
-  diffMode: "unified",
+  permission: "full",
   thinkingDetail: "brief",
   toolDetail: "brief",
   workspaces: [],
