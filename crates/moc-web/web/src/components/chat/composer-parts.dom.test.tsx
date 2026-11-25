@@ -5,13 +5,17 @@ import { Popover, PopoverAnchor } from "@/components/ui/popover";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useI18n } from "@/lib/i18n";
 import { commandToken } from "@/lib/slash";
+import { createView } from "@/lib/transcript-model";
+import type { SessionInfo, TodoItem } from "@/protocol/types";
 import { useConnection } from "@/store/connection";
+import { useTranscript } from "@/store/transcript";
 import { ComposerStatus, ShellModeNotice, type Suggestion, SuggestionMenu } from "./composer-parts";
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   useConnection.setState({ server: null });
+  useTranscript.getState().drop("todo-session");
 });
 
 it("命令范围只认开头的已知命令、别名和插件命令", () => {
@@ -106,6 +110,113 @@ it("空闲态 tips 末尾提供刷新按钮，点击随机切到不同条目；�
     });
   });
   expect(view.queryByRole("button", { name: "Next tip" })).toBeNull();
+});
+
+it("进行中 todo 在折叠态与展开态突出显示，仅运行中旋转，超长时启用渐隐滚屏", () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
+  const info: SessionInfo = {
+    id: "todo-session",
+    title: "todo",
+    cwd: "/repo/moc",
+    model: "p/m",
+    engine: "standard",
+    autonomy: "default",
+    permission: "workspace",
+    plan_active: false,
+    fast_mode: false,
+    engine_locked: false,
+    created_at_ms: 0,
+    updated_at_ms: 0,
+  };
+  const sessionView = createView(info);
+  sessionView.running = true;
+  useTranscript.setState({ bySession: { [info.id]: sessionView } });
+
+  const longTask = "超长进行中任务文案用于验证溢出渐隐与悬停平移";
+  const todos: TodoItem[] = [
+    { task: "已完成项", status: "completed" },
+    { task: longTask, status: "in_progress" },
+    { task: "待开始项", status: "pending" },
+  ];
+
+  // 模拟折叠态文案宽度超出容器，验证溢出测量生效。
+  const origClientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+  const origOffsetWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth");
+  Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+    configurable: true,
+    get() {
+      return this.getAttribute?.("title") === longTask ? 100 : 0;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
+    configurable: true,
+    get() {
+      return this.textContent === longTask ? 260 : 0;
+    },
+  });
+
+  try {
+    const rendered = render(
+      <TooltipProvider>
+        <ComposerStatus sessionId={info.id} todos={todos} />
+      </TooltipProvider>,
+    );
+
+    const toggle = rendered.getByRole("button", { name: /Tasks/ });
+    const spinner = toggle.querySelector("svg.text-brand");
+    expect(spinner?.classList.contains("animate-spin")).toBe(true);
+
+    // 折叠态进行中文案提亮且溢出时启用渐隐与滚屏偏移变量。
+    const lineOuter = rendered.getByTitle(longTask);
+    expect(lineOuter.className).toContain("text-foreground");
+    expect(lineOuter.className).toContain("mask-r-from-");
+    const lineInner = lineOuter.firstElementChild as HTMLElement;
+    expect(lineInner.style.getPropertyValue("--scroll-shift")).toBe("-160px");
+
+    // 展开后三态视觉分层：进行中加粗高亮、待办次级色、已完成删除线。
+    fireEvent.click(toggle);
+    expect(rendered.getByText(longTask).className).toContain("font-medium");
+    expect(rendered.getByText(longTask).className).toContain("text-foreground");
+    expect(rendered.getByText("待开始项").className).toContain("text-muted-foreground");
+    expect(rendered.getByText("已完成项").className).toContain("line-through");
+
+    // 会话停止后，未关闭的 in_progress 图标停止旋转但保持品牌色。
+    act(() => {
+      useTranscript.getState().mutate(info.id, (draft) => {
+        draft.running = false;
+      });
+    });
+    const idleSpinners = rendered.container.querySelectorAll("svg.text-brand");
+    expect(idleSpinners.length).toBeGreaterThan(0);
+    for (const icon of idleSpinners) {
+      expect(icon.classList.contains("animate-spin")).toBe(false);
+    }
+
+    // 全部完成时行首图标切为完成态绿色图标。
+    rendered.rerender(
+      <TooltipProvider>
+        <ComposerStatus sessionId={info.id} todos={[{ task: "全部完成", status: "completed" }]} />
+      </TooltipProvider>,
+    );
+    expect(toggle.querySelector("svg.text-success")).toBeTruthy();
+  } finally {
+    if (origClientWidth) {
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", origClientWidth);
+    } else {
+      Reflect.deleteProperty(HTMLElement.prototype, "clientWidth");
+    }
+    if (origOffsetWidth) {
+      Object.defineProperty(HTMLElement.prototype, "offsetWidth", origOffsetWidth);
+    } else {
+      Reflect.deleteProperty(HTMLElement.prototype, "offsetWidth");
+    }
+  }
 });
 
 const SAMPLE_SUGGESTIONS: Suggestion[] = [

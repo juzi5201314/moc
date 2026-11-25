@@ -118,15 +118,23 @@ function TipText({ tip }: { tip: string }) {
 }
 
 /**
- * 状态条提示：放不下时右缘渐隐示意还有后文，悬停后整行匀速平移到末尾，移开复位。
+ * 单行溢出滚屏：放不下时右缘渐隐示意还有后文，悬停后整行匀速平移到末尾，移开复位。
  * 量内层的 offsetWidth：平移走 transform 不改变它，悬停中重测也不会归零。
  */
-function TipLine({ tip }: { tip: string }) {
-  const t = useT();
-  const box = useRef<HTMLParagraphElement>(null);
+function ScrollLine({
+  title,
+  className,
+  children,
+}: {
+  title: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  const box = useRef<HTMLSpanElement>(null);
   const line = useRef<HTMLSpanElement>(null);
   const [overflow, setOverflow] = useState(0);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 文案切换时立即重测溢出宽度
   useLayoutEffect(() => {
     const outer = box.current;
     const inner = line.current;
@@ -138,32 +146,52 @@ function TipLine({ tip }: { tip: string }) {
     observer.observe(outer);
     observer.observe(inner);
     return () => observer.disconnect();
-  }, []);
+  }, [title]);
 
   // 平移与渐隐没有现成组件，用最少的 Tailwind 组合；速度 50px/s，减弱动效时直接跳到末尾。
   return (
-    <p
+    <span
       ref={box}
       className={cn(
-        "group/tip ml-1.5 mr-1 min-w-0 overflow-hidden whitespace-nowrap animate-in fade-in-0 duration-300",
+        "group/scroll block min-w-0 overflow-hidden whitespace-nowrap",
         overflow > 0 && "mask-r-from-[calc(100%-1.5rem)] hover:mask-none",
+        className,
       )}
-      title={tip.replaceAll("`", "")}
+      title={title}
     >
       <span
         ref={line}
-        className="inline-block transition-transform duration-300 group-hover/tip:translate-x-(--tip-shift) group-hover/tip:delay-300 group-hover/tip:duration-(--tip-duration) group-hover/tip:ease-linear motion-reduce:transition-none"
+        className={cn(
+          "block w-max",
+          overflow > 0 &&
+            "transition-transform duration-300 group-hover/scroll:translate-x-(--scroll-shift) group-hover/scroll:delay-300 group-hover/scroll:duration-(--scroll-duration) group-hover/scroll:ease-linear motion-reduce:transition-none",
+        )}
         style={
-          {
-            "--tip-shift": `-${overflow}px`,
-            "--tip-duration": `${overflow * 20}ms`,
-          } as CSSProperties
+          overflow > 0
+            ? ({
+                "--scroll-shift": `-${overflow}px`,
+                "--scroll-duration": `${overflow * 20}ms`,
+              } as CSSProperties)
+            : undefined
         }
       >
-        <span className="mr-1 font-medium">{t("cp.tips")}</span>
-        <TipText tip={tip} />
+        {children}
       </span>
-    </p>
+    </span>
+  );
+}
+
+/** 状态条提示：复用单行溢出滚屏展示随机 tip。 */
+function TipLine({ tip }: { tip: string }) {
+  const t = useT();
+  return (
+    <ScrollLine
+      title={tip.replaceAll("`", "")}
+      className="ml-1.5 mr-1 animate-in fade-in-0 duration-300"
+    >
+      <span className="mr-1 font-medium">{t("cp.tips")}</span>
+      <TipText tip={tip} />
+    </ScrollLine>
   );
 }
 
@@ -260,9 +288,9 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
   ).length;
 
   const done = todos.filter((item) => item.status === "completed").length;
-  const current =
-    todos.find((item) => item.status === "in_progress") ??
-    todos.find((item) => item.status !== "completed");
+  const allDone = todos.length > 0 && done === todos.length;
+  const inProgress = todos.find((item) => item.status === "in_progress");
+  const current = inProgress ?? todos.find((item) => item.status !== "completed");
   const inspect = (tab: "changes") => useLayout.getState().openInspector(tab);
   const agentTotal = Object.keys(view?.agents ?? {}).length;
   const popoverKind = useUi((state) => state.statusPopover);
@@ -281,12 +309,27 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
               className="flex h-6 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-muted-foreground transition-colors hover:text-foreground"
               aria-expanded={open}
             >
-              <ListChecksIcon className="size-3.5 shrink-0" />
+              {inProgress ? (
+                <Loader2Icon
+                  className={cn("size-3.5 shrink-0 text-brand", running && "animate-spin")}
+                />
+              ) : allDone ? (
+                <CheckCircle2Icon className="size-3.5 shrink-0 text-success" />
+              ) : (
+                <ListChecksIcon className="size-3.5 shrink-0" />
+              )}
               <span className="shrink-0 font-medium text-foreground">{t("cp.tasks")}</span>
               <span className="shrink-0 tabular-nums text-muted-foreground">
                 {done}/{todos.length}
               </span>
-              {!open && current && <span className="min-w-0 truncate">{current.task}</span>}
+              {!open && current && (
+                <ScrollLine
+                  title={current.task}
+                  className={inProgress ? "text-foreground" : undefined}
+                >
+                  {current.task}
+                </ScrollLine>
+              )}
               <ChevronDownIcon
                 className={cn("size-3 shrink-0 transition-transform", !open && "rotate-180")}
               />
@@ -361,17 +404,19 @@ export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos:
                 {item.status === "completed" ? (
                   <CheckCircle2Icon className="size-3.5 text-success" />
                 ) : item.status === "in_progress" ? (
-                  <Loader2Icon className="size-3.5 animate-spin text-brand" />
+                  <Loader2Icon className={cn("size-3.5 text-brand", running && "animate-spin")} />
                 ) : (
                   <CircleIcon className="size-3.5 text-text-tertiary" />
                 )}
               </span>
               <span
                 className={cn(
-                  "min-w-0",
+                  "min-w-0 [overflow-wrap:anywhere]",
                   item.status === "completed"
                     ? "text-text-tertiary line-through"
-                    : "text-foreground",
+                    : item.status === "in_progress"
+                      ? "font-medium text-foreground"
+                      : "text-muted-foreground",
                 )}
               >
                 {item.task}
