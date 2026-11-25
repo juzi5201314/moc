@@ -225,6 +225,7 @@ async fn snapshot(
         .await
         .map_err(to_rpc)?;
     let state = record.state.lock().await;
+    let web_widgets = inner.web_widgets_enabled(ctx, state.session.is_subagent());
     let pieces = crate::system_prompt::pieces(
         &config,
         &model,
@@ -235,6 +236,7 @@ async fn snapshot(
         &tool_declarations,
         &plugin_prompt,
         subagent.as_ref().map(|p| p.block.as_str()),
+        web_widgets,
     );
     let system = crate::system_prompt::compose(pieces.clone());
     let tools = inner.tools.definitions(

@@ -26,8 +26,6 @@ pub mod key {
     pub const NOTICE: &str = "notice";
     /// 持久目标上下文（目标存在期间每轮注入）。
     pub const GOAL: &str = "goal";
-    /// WebUI 嵌入式交互组件能力声明（仅顶层 webui 会话注入，切回非 Web 前端时撤回）。
-    pub const WEB_WIDGET: &str = "web-widget";
 }
 
 /// 条目的注入策略。

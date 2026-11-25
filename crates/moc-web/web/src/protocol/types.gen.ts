@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 7edbf53555d252c4
+// schema sha256: 0e8e887894bf1635
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -6295,6 +6295,10 @@ export interface WebState {
    * 工具块的显示档位：隐藏只留标题行，简略按工具给少量预览，完整显示全部输出。
    */
   tool_detail?: "hidden" | "brief" | "full";
+  /**
+   * 允许在主对话中渲染交互式 `widget` 代码块，并向模型暴露组件能力与 `tool://widget` 文档。
+   */
+  widgets?: boolean;
   /**
    * 侧栏「工作区」里用户手动添加的目录，按添加先后排列。
    */

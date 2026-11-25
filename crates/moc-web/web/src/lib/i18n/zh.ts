@@ -1235,6 +1235,9 @@ export const zh = {
   "ss.tool_display_desc":
     "Hidden 仅显示标题，Brief 展示精简摘要，告警始终可见。按 Ctrl+O 快速切换，点击单条卡片可展开完整输出。",
   "ss.use_parent": "沿用父 session 当前 model",
+  "ss.widgets": "Interactive Widgets",
+  "ss.widgets_desc":
+    "在助手回复中内嵌渲染交互式 HTML/CSS/JS 组件，并向模型提供组件能力说明；关闭后仅按普通代码块展示且不再注入相关提示词。",
 
   // ---------- 可用工具 ----------
   "td.desc": "基于当前 session 状态，下一轮请求将向 model 提供以下工具定义。",

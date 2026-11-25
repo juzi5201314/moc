@@ -1,8 +1,9 @@
 //! webui 前端状态：界面偏好与用户手动添加的工作区目录。
 //!
 //! 状态保存在 core 的 `config_home()/web.toml`，与 `tui.toml` 同类：是前端
-//! 自己的文件，不进入 core 配置合并与模型上下文。多浏览器经 `web/state` /
-//! `web/state_save` 读写同一份文件，写以 `revision` 乐观锁互斥。
+//! 自己的文件，不进入 core 项目配置合并；其中 `widgets` 也用于控制顶层 webui
+//! 会话是否向模型暴露交互组件能力与 `tool://widget` 文档。多浏览器经
+//! `web/state` / `web/state_save` 读写同一份文件，写以 `revision` 乐观锁互斥。
 //!
 //! 布局、标签页这类设备态仍在浏览器侧，不走这两个方法。
 //!
@@ -73,6 +74,8 @@ pub struct WebState {
     pub thinking_detail: WebDetailLevel,
     /// 工具块的显示档位：隐藏只留标题行，简略按工具给少量预览，完整显示全部输出。
     pub tool_detail: WebDetailLevel,
+    /// 允许在主对话中渲染交互式 `widget` 代码块，并向模型暴露组件能力与 `tool://widget` 文档。
+    pub widgets: bool,
     /// 侧栏「工作区」里用户手动添加的目录，按添加先后排列。
     pub workspaces: Vec<String>,
 }
@@ -87,6 +90,7 @@ impl Default for WebState {
             permission: SessionPermission::Full,
             thinking_detail: WebDetailLevel::Brief,
             tool_detail: WebDetailLevel::Brief,
+            widgets: true,
             workspaces: Vec::new(),
         }
     }
@@ -170,6 +174,7 @@ mod tests {
                 permission: SessionPermission::Workspace,
                 thinking_detail: WebDetailLevel::Full,
                 tool_detail: WebDetailLevel::Hidden,
+                widgets: false,
                 workspaces: vec!["/repo".into()],
             },
         };
@@ -186,6 +191,7 @@ mod tests {
                     "permission": "workspace",
                     "thinking_detail": "full",
                     "tool_detail": "hidden",
+                    "widgets": false,
                     "workspaces": ["/repo"],
                 },
             })

@@ -26,6 +26,7 @@ const info: SessionInfo = {
 
 const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
 const toolDetail = usePrefs.getState().toolDetail;
+const widgets = usePrefs.getState().widgets;
 const locale = useI18n.getState().locale;
 
 it("已完成的回复以静态 Markdown 渲染并保留语义内容", async () => {
@@ -95,7 +96,7 @@ afterEach(() => {
   vi.useRealTimers();
   useI18n.setState({ locale });
   useTranscript.getState().drop(info.id);
-  usePrefs.setState({ toolDetail });
+  usePrefs.setState({ toolDetail, widgets });
   if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
   else Reflect.deleteProperty(navigator, "clipboard");
   vi.restoreAllMocks();
@@ -595,5 +596,39 @@ it("用户多行消息按显式换行拆分为独立行块，保留空行与引�
   expect(rows[2].classList.contains("moc-text-line-empty")).toBe(true);
   expect(rows[2].querySelector("br")).not.toBeNull();
   expect(rows[3].textContent).toBe("空行后第三行");
+  thread.unmount();
+});
+
+it("widgets 偏好关闭后主对话不再渲染交互组件卡片", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const view = createView(info);
+  view.blocks = [
+    { kind: "user", id: "q", text: "画一个计数器", images: [], atMs: 0 },
+    { kind: "text", id: "a", text: '```widget title="计数器"\n<div>0</div>\n```' },
+    { kind: "footer", id: "f", finishReason: "Stop", atMs: 1 },
+  ];
+  useTranscript.setState({ bySession: { [info.id]: view } });
+  const thread = render(
+    <TooltipProvider>
+      <ChatThread sessionId={info.id} />
+    </TooltipProvider>,
+  );
+
+  await waitFor(() => {
+    expect(thread.container.querySelector("iframe")).not.toBeNull();
+  });
+
+  act(() => usePrefs.setState({ widgets: false }));
+  await waitFor(() => {
+    expect(thread.container.querySelector("iframe")).toBeNull();
+    expect(thread.container.querySelector('[data-streamdown="code-block"]')).not.toBeNull();
+  });
   thread.unmount();
 });

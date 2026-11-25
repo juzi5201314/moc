@@ -66,6 +66,7 @@ import { retrySession } from "@/store/actions";
 import { useComposer } from "@/store/composer";
 import { openFile, revealDir } from "@/store/files";
 import { loadOlder, redo, rewind } from "@/store/lifecycle";
+import { usePrefs } from "@/store/prefs";
 import { useTranscript } from "@/store/transcript";
 import { useTurn, useTurnIds } from "@/store/turns";
 
@@ -79,6 +80,7 @@ type TurnContext = {
   sessionId: string;
   readOnly: boolean;
   running: boolean;
+  widgets: boolean;
 };
 
 function errorText(error: unknown): string {
@@ -149,9 +151,15 @@ export function ChatThread({ sessionId }: { sessionId: string }) {
   const permissions = useTranscript((state) => state.permissions[sessionId]) ?? EMPTY_PERMISSIONS;
   const asks = useTranscript((state) => state.asks[sessionId]) ?? EMPTY_ASKS;
   const turnIds = useTurnIds(sessionId);
+  const widgets = usePrefs((state) => state.widgets);
   const context: TurnContext = useMemo(
-    () => ({ sessionId, readOnly: Boolean(view?.readOnly), running: Boolean(view?.running) }),
-    [sessionId, view?.readOnly, view?.running],
+    () => ({
+      sessionId,
+      readOnly: Boolean(view?.readOnly),
+      running: Boolean(view?.running),
+      widgets,
+    }),
+    [sessionId, view?.readOnly, view?.running, widgets],
   );
   if (!view) return null;
 
@@ -737,7 +745,7 @@ function AssistantTurn({
         return (
           <MessageResponse
             key={segment.id}
-            allowWidgets
+            allowWidgets={context.widgets}
             sessionId={context.sessionId}
             isAnimating={isAnimating}
             mode={isAnimating ? "streaming" : "static"}

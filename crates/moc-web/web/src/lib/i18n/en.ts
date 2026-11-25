@@ -1263,6 +1263,9 @@ export const en: Record<MsgKey, string> = {
   "ss.tool_display_desc":
     "Hidden keeps only titles, Brief shows concise previews, and warnings always stay visible. Press Ctrl+O to toggle; click an entry to expand.",
   "ss.use_parent": "Inherit parent session model",
+  "ss.widgets": "Interactive Widgets",
+  "ss.widgets_desc":
+    "Render interactive HTML/CSS/JS widget blocks inline in replies and expose widget capability instructions to the model.",
 
   // ---------- available tools ----------
   "td.desc":

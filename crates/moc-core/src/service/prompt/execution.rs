@@ -273,6 +273,7 @@ pub(super) async fn run_prompt_locked(
     }
     let subagent_prompt = crate::agents::subagent_prompt(&inner, &params.session_id).await;
     let plugin_prompt = plugins.prompt_text(&plugin_context).await;
+    let web_widgets = inner.web_widgets_enabled(&ctx, subagent);
     let system = build(
         &project_config,
         &model,
@@ -283,6 +284,7 @@ pub(super) async fn run_prompt_locked(
         &tool_declarations,
         &plugin_prompt,
         subagent_prompt.as_ref().map(|prompt| prompt.block.as_str()),
+        web_widgets,
     );
     // 代理列表随兄弟代理的状态变化，放在尾部提醒里，免得每次变化都让系统前缀缓存失效。
     let roster = subagent_prompt.map(|prompt| prompt.roster);
@@ -362,7 +364,6 @@ pub(super) async fn run_prompt_locked(
                     cycle_redirect: cycle_redirect.take(),
                     thinking_redirect: thinking_redirect.take(),
                     first_turn,
-                    web_widgets: !subagent && ctx.client().frontend == "webui",
                 })
                 .await?;
                 let mut inputs = {

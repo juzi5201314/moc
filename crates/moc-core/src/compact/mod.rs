@@ -181,6 +181,7 @@ pub(crate) async fn model_context(
         .await;
     // 子代理的身份与任务块在普通请求里进系统提示；压缩请求必须复用同一段前缀。
     let subagent = crate::agents::subagent_prompt(inner, &state.session.id).await;
+    let web_widgets = inner.web_widgets_enabled(ctx, state.session.is_subagent());
     let prompt = crate::system_prompt::build(
         config,
         model,
@@ -191,6 +192,7 @@ pub(crate) async fn model_context(
         &tool_declarations,
         &plugin_prompt,
         subagent.as_ref().map(|prompt| prompt.block.as_str()),
+        web_widgets,
     );
     let system = prompt.messages;
     let plugins = inner.plugin_tools(cwd).await;

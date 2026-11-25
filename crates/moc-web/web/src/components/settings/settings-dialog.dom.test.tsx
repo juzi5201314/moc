@@ -63,6 +63,10 @@ it("分类在窄屏横向滚动，内容与控件占满一行，桌面保留侧�
   expect(theme.parentElement?.parentElement?.className).toContain("w-full");
   fireEvent.click(theme);
   expect(usePrefs.getState().theme).toBe("dark");
+  const widgetsSwitch = view.getByRole("switch", { name: "Interactive Widgets" });
+  expect(usePrefs.getState().widgets).toBe(true);
+  fireEvent.click(widgetsSwitch);
+  expect(usePrefs.getState().widgets).toBe(false);
   fireEvent.click(within(nav).getByRole("button", { name: "Keybindings" }));
   expect(view.getByRole("heading", { name: "Keybindings" })).toBeTruthy();
   expect(

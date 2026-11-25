@@ -1,7 +1,8 @@
 //! webui 前端状态：`config_home()/web.toml`。
 //!
 //! 与 `tui.toml` 同类：界面偏好与用户手动添加的工作区目录是前端自己的文件，
-//! 不进入 core 配置合并与模型上下文。写走文件锁 + 版本戳比对 + 原子重命名，
+//! 不进入 core 项目配置合并；其中 `widgets` 同时决定顶层 webui 会话是否向模型
+//! 暴露交互组件能力与 `tool://widget` 文档。写走文件锁 + 版本戳比对 + 原子重命名，
 //! 与 `editor::save` 同一套并发约定。
 
 use super::editor::{contents, revision, write_atomic};

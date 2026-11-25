@@ -69,6 +69,17 @@ impl CoreInner {
         Arc::clone(&self.config.read())
     }
 
+    /// 当前请求所属会话是否启用 WebUI 嵌入式交互组件（仅顶层 webui 会话且 `web.toml` 的 `widgets = true`）。
+    pub(crate) fn web_widgets_enabled(&self, ctx: &RequestContext, subagent: bool) -> bool {
+        if subagent || ctx.client().frontend != "webui" {
+            return false;
+        }
+        let home = self.config().home.clone();
+        crate::config::web::load(&home)
+            .map(|doc| doc.state.widgets)
+            .unwrap_or(true)
+    }
+
     pub(crate) async fn provider_permit(
         &self,
         model: &crate::ResolvedModel,

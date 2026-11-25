@@ -33,6 +33,8 @@ export type Prefs = {
   thinkingDetail: WebDetailLevel;
   /** 工具块显示档位。 */
   toolDetail: WebDetailLevel;
+  /** 允许在主对话中渲染交互式 widget，并向模型暴露组件能力与文档。 */
+  widgets: boolean;
 };
 
 type PrefsStore = Prefs & {
@@ -83,6 +85,7 @@ function toWire(prefs: Prefs, workspaces: string[]): WebState {
     permission: prefs.permission,
     thinking_detail: prefs.thinkingDetail,
     tool_detail: prefs.toolDetail,
+    widgets: prefs.widgets,
     workspaces,
   };
 }
@@ -97,6 +100,7 @@ function fromWire(state: WebState): Prefs {
     permission: state.permission ?? "full",
     thinkingDetail: state.thinking_detail ?? "brief",
     toolDetail: state.tool_detail === "hidden" ? "hidden" : "brief",
+    widgets: state.widgets ?? true,
   };
 }
 
@@ -136,12 +140,22 @@ async function sync(): Promise<void> {
     permission,
     thinkingDetail,
     toolDetail,
+    widgets,
   } = usePrefs.getState();
   try {
     const doc = await rpc.call<WebStateDocument>("web/state_save", {
       revision,
       state: toWire(
-        { theme, runningEnter, queueOnEnter, notify, permission, thinkingDetail, toolDetail },
+        {
+          theme,
+          runningEnter,
+          queueOnEnter,
+          notify,
+          permission,
+          thinkingDetail,
+          toolDetail,
+          widgets,
+        },
         workspaces,
       ),
     });
@@ -235,6 +249,7 @@ export const usePrefs = create<PrefsStore>()((set, get) => ({
   permission: "full",
   thinkingDetail: "brief",
   toolDetail: "brief",
+  widgets: true,
   workspaces: [],
 
   set: (patch) => {

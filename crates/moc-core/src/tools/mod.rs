@@ -262,6 +262,7 @@ impl ToolCtx {
                     self.request.connection_id(),
                     self.state.lock().await.session.autonomy,
                 ),
+                web_widgets: self.core.web_widgets_enabled(&self.request, self.subagent),
             }),
         }
     }

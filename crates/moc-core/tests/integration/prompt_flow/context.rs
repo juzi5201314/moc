@@ -665,7 +665,12 @@ async fn runtime_reminders_are_injected_once_per_change_not_per_request() {
 }
 
 #[tokio::test]
-async fn web_widget_reminder_is_scoped_to_webui_and_retracted_in_tui() {
+async fn web_widget_prompt_and_doc_follow_frontend_and_web_state() {
+    use moc_protocol::{
+        ResourceList, ResourceListParams, ResourceRead, ResourceReadParams, WebState, WebStateGet,
+        WebStateGetParams, WebStateSave, WebStateSaveParams,
+    };
+
     let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
@@ -694,7 +699,7 @@ async fn web_widget_reminder_is_scoped_to_webui_and_retracted_in_tui() {
         }
     };
 
-    // 1. 纯 TUI 会话既不注入 WEB_WIDGET，也不产生 Retract。
+    // 1. 纯 TUI 会话：系统提示与提醒不含 widget，tool://widget 不可列也不可读。
     let (tui_client, tui_conn) = connect_as("tui").await;
     let tui_session = tui_client
         .call::<SessionNew>(SessionNewParams {
@@ -707,6 +712,24 @@ async fn web_widget_reminder_is_scoped_to_webui_and_retracted_in_tui() {
         })
         .await
         .expect("new tui session");
+    let tui_tools = tui_client
+        .call::<ResourceList>(ResourceListParams {
+            session_id: tui_session.id.clone(),
+            uri: "tool://".into(),
+        })
+        .await
+        .expect("list tool:// in tui");
+    assert!(!tui_tools.entries.iter().any(|entry| entry.uri == "tool://widget"));
+    assert!(
+        tui_client
+            .call::<ResourceRead>(ResourceReadParams {
+                session_id: tui_session.id.clone(),
+                uri: "tool://widget".into(),
+                max_bytes: None,
+            })
+            .await
+            .is_err()
+    );
     tui_client
         .call::<SessionPrompt>(PromptParams {
             session_id: tui_session.id.clone(),
@@ -719,7 +742,7 @@ async fn web_widget_reminder_is_scoped_to_webui_and_retracted_in_tui() {
         .await
         .expect("tui prompt");
 
-    // 2. WebUI 会话注入 WEB_WIDGET；释放后用 TUI 打开续聊时触发一次 Retract。
+    // 2. WebUI 默认开启 widgets：极短引导落在 system prompt（不进 runtime reminder），详细契约由 tool://widget 按需读取。
     let (web_client, web_conn) = connect_as("webui").await;
     let web_session = web_client
         .call::<SessionNew>(SessionNewParams {
@@ -732,6 +755,25 @@ async fn web_widget_reminder_is_scoped_to_webui_and_retracted_in_tui() {
         })
         .await
         .expect("new webui session");
+    let web_tools = web_client
+        .call::<ResourceList>(ResourceListParams {
+            session_id: web_session.id.clone(),
+            uri: "tool://".into(),
+        })
+        .await
+        .expect("list tool:// in webui");
+    assert!(web_tools.entries.iter().any(|entry| entry.uri == "tool://widget"));
+    let widget_doc = web_client
+        .call::<ResourceRead>(ResourceReadParams {
+            session_id: web_session.id.clone(),
+            uri: "tool://widget".into(),
+            max_bytes: None,
+        })
+        .await
+        .expect("read tool://widget in webui");
+    let widget_doc_text = widget_doc.content.as_deref().unwrap_or_default();
+    assert!(widget_doc_text.contains("moc-theme-change"));
+    assert!(widget_doc_text.contains("--bg"));
     web_client
         .call::<SessionPrompt>(PromptParams {
             session_id: web_session.id.clone(),
@@ -742,7 +784,68 @@ async fn web_widget_reminder_is_scoped_to_webui_and_retracted_in_tui() {
             max_turns: None,
         })
         .await
-        .expect("webui prompt");
+        .expect("webui prompt (widgets enabled)");
+
+    // 3. 关闭 web.toml 的 widgets 后：系统提示与 tool://widget 均消失。
+    let state_doc = web_client
+        .call::<WebStateGet>(WebStateGetParams {})
+        .await
+        .expect("read web state");
+    assert!(state_doc.state.widgets);
+    let saved = web_client
+        .call::<WebStateSave>(WebStateSaveParams {
+            revision: state_doc.revision,
+            state: WebState {
+                widgets: false,
+                ..state_doc.state
+            },
+        })
+        .await
+        .expect("disable web widgets");
+    assert!(!saved.state.widgets);
+    let web_tools_off = web_client
+        .call::<ResourceList>(ResourceListParams {
+            session_id: web_session.id.clone(),
+            uri: "tool://".into(),
+        })
+        .await
+        .expect("list tool:// when disabled");
+    assert!(!web_tools_off.entries.iter().any(|entry| entry.uri == "tool://widget"));
+    assert!(
+        web_client
+            .call::<ResourceRead>(ResourceReadParams {
+                session_id: web_session.id.clone(),
+                uri: "tool://widget".into(),
+                max_bytes: None,
+            })
+            .await
+            .is_err()
+    );
+    web_client
+        .call::<SessionPrompt>(PromptParams {
+            session_id: web_session.id.clone(),
+            input: vec![InputPart::Text {
+                text: "disabled".into(),
+            }],
+            mode: None,
+            agent_message: None,
+            goal_round: None,
+            max_turns: None,
+        })
+        .await
+        .expect("webui prompt (widgets disabled)");
+
+    // 重新开启 widgets 后卸载，换 TUI 续聊同一会话：TUI 下不包含 widget 提示词。
+    web_client
+        .call::<WebStateSave>(WebStateSaveParams {
+            revision: saved.revision,
+            state: WebState {
+                widgets: true,
+                ..saved.state
+            },
+        })
+        .await
+        .expect("re-enable web widgets");
     web_client
         .call::<SessionUnload>(SessionUnloadParams {
             session_id: web_session.id.clone(),
@@ -776,12 +879,49 @@ async fn web_widget_reminder_is_scoped_to_webui_and_retracted_in_tui() {
     tui_conn.close();
 
     let requests = upstream.received_requests().await.expect("requests");
-    assert_eq!(requests.len(), 3);
-    let body_text = |req: &wiremock::Request| String::from_utf8_lossy(&req.body).into_owned();
-    assert!(!body_text(&requests[0]).contains("WebUI renders fenced"));
-    assert!(!body_text(&requests[0]).contains("Interactive web widgets are unavailable"));
-    assert!(body_text(&requests[1]).contains("WebUI renders fenced"));
-    assert!(body_text(&requests[2]).contains("Interactive web widgets are unavailable"));
+    assert_eq!(requests.len(), 4);
+    let parse_messages = |req: &wiremock::Request| -> (String, String) {
+        let body: serde_json::Value = serde_json::from_slice(&req.body).expect("json body");
+        let messages = body["messages"].as_array().expect("messages array");
+        let system = messages
+            .iter()
+            .filter(|m| m["role"] == "system")
+            .filter_map(|m| m["content"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let non_system = messages
+            .iter()
+            .filter(|m| m["role"] != "system")
+            .filter_map(|m| m["content"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        (system, non_system)
+    };
+
+    // 请求 0：纯 TUI
+    let (sys0, rest0) = parse_messages(&requests[0]);
+    assert!(!sys0.contains("tool://widget"));
+    assert!(!rest0.contains("tool://widget"));
+
+    // 请求 1：WebUI（widgets 开启）— 简短声明在 system，详细契约不常驻，且不在 runtime reminder。
+    let (sys1, rest1) = parse_messages(&requests[1]);
+    assert!(sys1.contains("WebUI renders fenced `widget`"));
+    assert!(sys1.contains("tool://widget"));
+    assert!(!sys1.contains("moc-theme-change"));
+    assert!(!rest1.contains("WebUI renders fenced"));
+    assert!(!rest1.contains("tool://widget"));
+
+    // 请求 2：WebUI（widgets 关闭）— system 与非 system 都不含 widget 提示词。
+    let (sys2, rest2) = parse_messages(&requests[2]);
+    assert!(!sys2.contains("WebUI renders fenced"));
+    assert!(!sys2.contains("tool://widget"));
+    assert!(!rest2.contains("WebUI renders fenced"));
+
+    // 请求 3：切到 TUI 续聊 — system 不含 widget 提示词。
+    let (sys3, rest3) = parse_messages(&requests[3]);
+    assert!(!sys3.contains("WebUI renders fenced"));
+    assert!(!sys3.contains("tool://widget"));
+    assert!(!rest3.contains("Interactive web widgets are unavailable"));
 
     h.close().await;
 }

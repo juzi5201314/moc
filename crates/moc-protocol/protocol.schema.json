@@ -8989,6 +8989,11 @@
           "default": "brief",
           "description": "工具块的显示档位：隐藏只留标题行，简略按工具给少量预览，完整显示全部输出。"
         },
+        "widgets": {
+          "default": true,
+          "description": "允许在主对话中渲染交互式 `widget` 代码块，并向模型暴露组件能力与 `tool://widget` 文档。",
+          "type": "boolean"
+        },
         "workspaces": {
           "default": [],
           "description": "侧栏「工作区」里用户手动添加的目录，按添加先后排列。",

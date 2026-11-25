@@ -196,6 +196,15 @@ export function GeneralSection() {
               options={TOOL_DETAIL_OPTIONS.map((option) => ({ ...option, label: t(option.label) }))}
             />
           </SettingRow>
+          <SettingRow label={t("ss.widgets")} description={t("ss.widgets_desc")}>
+            <div className="flex justify-end">
+              <Switch
+                aria-label={t("ss.widgets")}
+                checked={prefs.widgets}
+                onCheckedChange={(widgets) => prefs.set({ widgets })}
+              />
+            </div>
+          </SettingRow>
         </Card>
       </section>
 

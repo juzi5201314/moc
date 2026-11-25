@@ -35,14 +35,9 @@ use crate::config::model::ResolvedModel;
 const DEFAULT_INTRO: &str = "You are a precise software-engineering agent working in the user's local workspace through tools.";
 /// 全局渲染契约独立于身份；主会话与旁路问答共用，自定义身份不覆盖它。
 const VISUAL_GUIDE: &str = "Use inline ```mermaid for flows/sequences/states/dependencies; ```svg for layouts/mockups/geometry Mermaid cannot express. Don't repeat diagrams in prose.\nSVG: colors only currentColor or var(--NAME), NAME=fg/muted/border/surface/accent/success/warning/error; no background/scripts/animation/foreignObject/external hrefs.";
-/// WebUI 嵌入式交互组件契约：仅由顶层 webui 会话的 durable reminder 注入，不进入静态前缀。
-pub const WEB_WIDGET_REMINDER: &str = concat!(
-    "WebUI renders fenced ```widget title=\"...\" [height=N] blocks in an inline iframe.\n",
-    "Use ```widget only when interactivity, live simulation, calculation, data exploration, or a runnable UI demo adds clear value over text, tables, ```mermaid, or ```svg (or when requested). Never wrap static diagrams or plain code examples.\n",
-    "Write complete HTML/CSS/JS (self-contained preferred; CDN libs allowed). Keep state in memory (opaque iframe: no localStorage/cookies). Support light/dark via CSS vars (--bg, --surface, --fg, --muted, --border, --accent, --success, --warn, --error, --font-sans, --font-mono), html.dark / data-theme, and window 'moc-theme-change' events. Use responsive width and natural height (avoid 100vh). Use a 4-backtick fence if code contains triple backticks."
-);
-/// 会话从 WebUI 切到不支持组件的前端时发送的撤回提醒。
-pub const WEB_WIDGET_RETRACT: &str = "Interactive web widgets are unavailable in this client: do not emit ```widget blocks; use text, tables, ```mermaid, or ```svg.";
+/// WebUI 嵌入式交互组件能力声明：仅在启用了组件的顶层 webui 会话作为 Project 片段注入。
+/// 详细语法、沙盒与主题契约按需由 `tool://widget` 提供，避免在普通编码对话里常驻整段规范。
+pub const WEB_WIDGET_PIECE: &str = "WebUI renders fenced `widget` HTML/CSS/JS blocks in an inline iframe. Use only when interactivity, live simulation, calculation, data exploration, or a runnable UI demo adds clear value over text, tables, `mermaid`, or `svg` (or when requested); never wrap static diagrams or plain code examples. Read `tool://widget` before emitting your first widget for the fence syntax, sandbox, and theme contract.";
 /// 模型写给用户看的文本的语言要求；语言名按 `language` 配置解析后拼接。
 const USER_TEXT_RULE_PREFIX: &str = "Write text the user reads in";
 const USER_TEXT_RULE_SCOPE: &str = "tool-call descriptions, plan and todo items, ask options, artifact titles and descriptions, log lines.";
@@ -96,6 +91,7 @@ pub const PIECE_REPO_RULES: &str = "repo rules";
 pub const PIECE_SKILLS: &str = "skills";
 pub const PIECE_PLUGINS: &str = "plugins";
 pub const PIECE_SUBAGENT: &str = "subagent";
+pub const PIECE_WEB_WIDGET: &str = "web widget";
 pub const PIECE_ENVIRONMENT: &str = "environment";
 pub const PIECE_APPEND: &str = "append";
 
@@ -139,6 +135,7 @@ pub fn build(
     tool_declarations: &str,
     plugins: &str,
     subagent: Option<&str>,
+    web_widgets: bool,
 ) -> SystemPrompt {
     compose(pieces(
         config,
@@ -150,6 +147,7 @@ pub fn build(
         tool_declarations,
         plugins,
         subagent,
+        web_widgets,
     ))
 }
 
@@ -186,6 +184,7 @@ pub fn pieces(
     tool_declarations: &str,
     plugins: &str,
     subagent: Option<&str>,
+    web_widgets: bool,
 ) -> Vec<PromptPiece> {
     let mut sections = Vec::new();
     sections.push(intro_piece(config));
@@ -285,6 +284,14 @@ pub fn pieces(
             name: PIECE_SUBAGENT,
             scope: PieceScope::Project,
             text: subagent.to_owned(),
+        });
+    }
+    if web_widgets && subagent.is_none() {
+        sections.push(PromptPiece {
+            title: "system",
+            name: PIECE_WEB_WIDGET,
+            scope: PieceScope::Project,
+            text: WEB_WIDGET_PIECE.to_owned(),
         });
     }
     sections.push(environment_piece(config, model, cwd));
@@ -545,6 +552,7 @@ mod tests {
             "",
             "",
             None,
+            false,
         )
         .into_iter()
         .find(|piece| piece.name == PIECE_TOOL_POLICY)
@@ -598,6 +606,7 @@ mod tests {
             "",
             "",
             None,
+            false,
         );
         assert_eq!(off_prompt.static_prefix, vec![4]);
         assert!(!prompt_text(&off_prompt).contains(MOC_CO_AUTHOR_TRAILER));
@@ -614,6 +623,7 @@ mod tests {
             "",
             "",
             None,
+            false,
         );
         assert_eq!(on_prompt.static_prefix, vec![5]);
         let on_blocks = blocks(&on_prompt);
@@ -676,6 +686,7 @@ mod tests {
             "",
             "",
             None,
+            false,
         );
         let text = prompt_text(&prompt);
         assert!(text.starts_with(DEFAULT_INTRO));
@@ -718,6 +729,7 @@ mod tests {
                 "",
                 "",
                 None,
+                false,
             );
             let text = prompt_text(&prompt);
             assert!(
@@ -746,6 +758,7 @@ mod tests {
             "",
             "",
             None,
+            false,
         );
         let blocks = blocks(&prompt);
         assert_eq!(
@@ -774,6 +787,7 @@ mod tests {
             "<tool-declarations>\ntools.read(args: { path: string }): Promise<ToolResult>\n</tool-declarations>",
             "",
             None,
+            false,
         );
         let blocks = blocks(&prompt);
         let declarations = blocks
@@ -781,6 +795,66 @@ mod tests {
             .position(|block| block.starts_with("<tool-declarations>"))
             .expect("工具声明片段");
         assert_eq!(prompt.static_prefix[0], declarations);
+    }
+
+    #[test]
+    fn web_widget_piece_is_project_scoped_and_omitted_for_subagents() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let cwd = directory.path().join("repo");
+        let home = directory.path().join("home");
+        let config = resolved(&cwd, &home);
+        let model = config.resolve_model("p/model").expect("resolve model");
+
+        let off = build(
+            &config,
+            &model,
+            &cwd,
+            &[],
+            &crate::skills::SkillIndex::empty(),
+            "",
+            "",
+            "",
+            None,
+            false,
+        );
+        assert!(!prompt_text(&off).contains("tool://widget"));
+
+        let on = build(
+            &config,
+            &model,
+            &cwd,
+            &[],
+            &crate::skills::SkillIndex::empty(),
+            "",
+            "",
+            "",
+            None,
+            true,
+        );
+        assert_eq!(on.static_prefix, off.static_prefix);
+        let on_blocks = blocks(&on);
+        let widget_idx = on_blocks
+            .iter()
+            .position(|block| block == WEB_WIDGET_PIECE)
+            .expect("web widget 片段");
+        assert!(
+            widget_idx >= on.static_prefix[0],
+            "web widget 必须落在 Project 作用域，不能分裂静态前缀缓存"
+        );
+
+        let subagent = build(
+            &config,
+            &model,
+            &cwd,
+            &[],
+            &crate::skills::SkillIndex::empty(),
+            "",
+            "",
+            "",
+            Some("<subagent>child</subagent>"),
+            true,
+        );
+        assert!(!prompt_text(&subagent).contains("tool://widget"));
     }
 
     #[test]
@@ -810,6 +884,7 @@ mod tests {
             "",
             "",
             None,
+            false,
         );
         let text = prompt_text(&prompt);
         assert!(text.contains("<skills>"));

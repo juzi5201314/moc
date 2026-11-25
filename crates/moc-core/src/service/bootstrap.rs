@@ -181,6 +181,9 @@ impl Core {
             ask_supported: self
                 .inner
                 .ask_available(ctx.connection_id(), metadata.session.autonomy),
+            web_widgets: self
+                .inner
+                .web_widgets_enabled(ctx, metadata.session.is_subagent()),
         }))
     }
 
