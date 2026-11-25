@@ -1,15 +1,20 @@
 // 统一上下文面板：总览 → 来源目录 → 正文；返回恢复位置，不展示协议树。
 import { ArrowLeftIcon, ChevronRightIcon, CopyIcon, RefreshCwIcon } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PlanMarkdown } from "@/components/plan/plan-markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import { useT } from "@/lib/i18n";
 import { compactTokens } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import type { ContextNode } from "@/protocol/types";
+import {
+  applyMessageFilter,
+  EMPTY_MESSAGE_FILTER,
+  MessageFilterBar,
+  type MessageFilterState,
+} from "./message-filter";
 import { originTone, sectionTone } from "./section-tone";
 import { splitToolCalls, ToolCallCard } from "./tool-call-card";
 import { useContextView } from "./use-context-view";
@@ -30,8 +35,8 @@ export function ContextViewer({
     parents: [],
   });
   const [raw, setRaw] = useState(false);
-  // 临时过滤：只在本窗口生效，不落盘
-  const [hideTools, setHideTools] = useState(false);
+  // 临时筛选：只在本窗口生效，不落盘
+  const [filter, setFilter] = useState<MessageFilterState>(EMPTY_MESSAGE_FILTER);
   const [copying, setCopying] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
   const location = navigation.current;
@@ -39,12 +44,13 @@ export function ContextViewer({
   const page = node ? snapshot.pages.get(node.id) : undefined;
   const body = node !== null && node.kind !== "category";
   const rows = node ? (page?.result?.children ?? []) : (snapshot.view?.sections ?? []);
-  // 消息目录的条目带来源分类；只有这里提供「隐藏工具结果」开关
+  // 消息目录的条目带来源分类；只有这里提供多选筛选小窗
   const messageList = !body && rows.some((row) => row.origin);
-  const shown =
-    messageList && hideTools
-      ? rows.filter((row) => !(row.hidden && row.origin === "tool_result"))
-      : rows;
+  const filtered = useMemo(
+    () => (messageList ? applyMessageFilter(rows, filter) : null),
+    [messageList, rows, filter],
+  );
+  const shown = filtered ? filtered.shown : rows;
   const total = snapshot.view?.total_tokens ?? 0;
   const window = snapshot.view?.context_window ?? 0;
 
@@ -140,14 +146,13 @@ export function ContextViewer({
           </div>
         </div>
       )}
-      {messageList && (
-        <div className="flex items-center justify-end border-b px-5 pb-2">
-          {/* biome-ignore lint/a11y/noLabelWithoutControl: Switch 是 Radix button，label 包裹即关联 */}
-          <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
-            {t("cv.hide_tools")}
-            <Switch size="sm" checked={hideTools} onCheckedChange={setHideTools} />
-          </label>
-        </div>
+      {messageList && filtered && (
+        <MessageFilterBar
+          filter={filter}
+          filtered={filtered}
+          totalCount={rows.length}
+          onChange={setFilter}
+        />
       )}
       {body && node && (
         <div className="flex flex-wrap items-center gap-2 border-b px-5 pb-3">
@@ -262,9 +267,19 @@ export function ContextViewer({
             );
           })}
         {node && !body && page?.result && shown.length === 0 && (
-          <p className="py-6 text-sm text-muted-foreground">
-            {rows.length > 0 ? t("cv.filtered_empty") : t("cv.empty")}
-          </p>
+          <div className="flex items-center justify-between gap-3 py-6 text-sm text-muted-foreground">
+            <p>{rows.length > 0 ? t("cv.filtered_empty") : t("cv.empty")}</p>
+            {rows.length > 0 && filtered && filtered.activeCount > 0 && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                onClick={() => setFilter(EMPTY_MESSAGE_FILTER)}
+              >
+                {t("cv.filter_reset")}
+              </Button>
+            )}
+          </div>
         )}
         {body &&
           page?.result?.text &&

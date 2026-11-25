@@ -22,7 +22,16 @@ const category: ContextNode = {
   name: "messages",
   kind: "category",
   tokens: 100,
-  children: 2,
+  children: 3,
+};
+const userMsg: ContextNode = {
+  id: "3",
+  name: "1 · User input",
+  kind: "markdown",
+  tokens: 10,
+  children: 0,
+  role: "user",
+  origin: "user_input",
 };
 const visible: ContextNode = {
   id: "1",
@@ -62,7 +71,7 @@ beforeEach(() => {
       return {
         view_id: "v1",
         node_id: params.node_id,
-        children: params.node_id === "0" ? [visible, hidden] : [],
+        children: params.node_id === "0" ? [userMsg, visible, hidden] : [],
         text: params.node_id === "1" ? body : null,
       };
     return {};
@@ -99,13 +108,44 @@ it("隐藏项无法进入，阅读后返回恢复目录焦点，更新不替换�
   ui.unmount();
 });
 
-it("消息目录可临时隐藏工具结果，正文里的工具调用渲染为卡片", async () => {
+it("消息目录支持多选筛选小窗组合过滤，正文里的工具调用渲染为卡片", async () => {
   const ui = render(<ContextViewer sessionId="s1" />);
   fireEvent.click(await ui.findByText("messages"));
   await ui.findByRole("button", { name: /工具结果/ });
   expect(ui.getByText("tool")).toBeTruthy();
-  fireEvent.click(ui.getByRole("switch"));
+
+  // 打开筛选小窗并勾选 Readable：隐藏不可展开的工具结果，小窗保持打开便于连续多选
+  fireEvent.click(ui.getByRole("button", { name: /Filter/ }));
+  const readableOption = (await ui.findByRole("checkbox", {
+    name: /Readable/,
+  })) as HTMLInputElement;
+  fireEvent.click(readableOption);
+  expect(readableOption.checked).toBe(true);
   expect(ui.queryByRole("button", { name: /工具结果/ })).toBeNull();
+  expect(ui.getByRole("button", { name: /运行时提醒/ })).toBeTruthy();
+  expect(ui.getByRole("button", { name: /1 · User input/ })).toBeTruthy();
+
+  // 叠加 Origin + Role 跨组筛选：User input ∧ developer 无命中，支持一键 Reset 恢复
+  fireEvent.click(ui.getByRole("checkbox", { name: /User input/ }));
+  expect(ui.queryByRole("button", { name: /运行时提醒/ })).toBeNull();
+  expect(ui.getByRole("button", { name: /1 · User input/ })).toBeTruthy();
+
+  // 同组 OR：继续勾选 Runtime injection 后两条均显示
+  fireEvent.click(ui.getByRole("checkbox", { name: /Runtime injection/ }));
+  expect(ui.getByRole("button", { name: /运行时提醒/ })).toBeTruthy();
+  expect(ui.getByRole("button", { name: /1 · User input/ })).toBeTruthy();
+
+  // 通过外侧胶囊移除单个条件（移除 User input 后只剩运行时提醒）
+  fireEvent.click(ui.getByRole("button", { name: "移除 User input 筛选" }));
+  expect(ui.queryByRole("button", { name: /1 · User input/ })).toBeNull();
+  expect(ui.getByRole("button", { name: /运行时提醒/ })).toBeTruthy();
+
+  // 跨组 AND 命中为空时显示空态提示与 Reset
+  fireEvent.click(ui.getByRole("checkbox", { name: "user" }));
+  expect(ui.getByText("本页没有匹配当前筛选条件的条目。")).toBeTruthy();
+  fireEvent.click(ui.getAllByRole("button", { name: "Reset" })[0]);
+  expect(ui.getByRole("button", { name: /工具结果/ })).toBeTruthy();
+
   fireEvent.click(ui.getByText("运行时提醒"));
   await ui.findByText("提醒正文");
   expect(ui.getByText("call_1")).toBeTruthy();
@@ -127,11 +167,17 @@ it("关闭前尚未完成的快照返回后立即释放，不污染其它会话"
   );
 });
 
-it("Esc 逐层返回，只在总览层关闭统一面板", async () => {
+it("Esc 先关闭筛选小窗再逐层返回，只在总览层关闭统一面板", async () => {
   useUi.getState().set({ contextDialog: "s1" });
   const ui = render(<ContextDialog />);
   fireEvent.click(await ui.findByText("messages"));
-  fireEvent.click(await ui.findByText("运行时提醒"));
+  await ui.findByRole("button", { name: /工具结果/ });
+  fireEvent.click(ui.getByRole("button", { name: /Filter/ }));
+  await ui.findByRole("checkbox", { name: /Readable/ });
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(ui.queryByRole("checkbox", { name: /Readable/ })).toBeNull());
+  expect(ui.getByRole("button", { name: /工具结果/ })).toBeTruthy();
+  fireEvent.click(ui.getByText("运行时提醒"));
   await ui.findByText("提醒正文");
   fireEvent.keyDown(document, { key: "Escape" });
   await waitFor(() => expect(ui.queryByText("提醒正文")).toBeNull());

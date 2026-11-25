@@ -710,8 +710,16 @@ export const en: Record<MsgKey, string> = {
   "msg.image_unavailable": "Image unavailable",
 
   // ---------- context viewer ----------
-  "cv.hide_tools": "Hide tool results",
-  "cv.filtered_empty": "Every item on this page is a hidden tool result.",
+  "cv.filter": "Filter",
+  "cv.filter_clear": "Clear filters",
+  "cv.filter_content": "Content",
+  "cv.filter_hidden": "Hidden",
+  "cv.filter_origin": "Origin",
+  "cv.filter_readable": "Readable",
+  "cv.filter_remove": "Remove {label} filter",
+  "cv.filter_reset": "Reset",
+  "cv.filter_role": "Role",
+  "cv.filtered_empty": "No items on this page match the current filters.",
   "cv.no_args": "No arguments",
   "cv.back": "Back",
   "cv.copied": "Copied",

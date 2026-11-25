@@ -6,18 +6,32 @@ export function sectionTone(name: string, index: number): { className: string; o
     : { className: "bg-foreground/25", opacity: 1 - index * 0.1 };
 }
 
-// 消息条目按来源着色：用户输入、模型输出、工具结果、运行时注入各一色，其余指令类用中性灰。
-const ORIGIN_TONE: Record<string, string> = {
-  user_input: "bg-chart-1",
-  assistant_output: "bg-chart-5",
-  tool_result: "bg-chart-6",
-  manual_command: "bg-chart-6",
-  runtime_injection: "bg-chart-7",
-  goal_round: "bg-chart-7",
-  session_state: "bg-chart-7",
-  agent_message: "bg-chart-2",
+// 消息条目按来源着色与展示名：与 core/service/context/outline.rs 的 origin 分类保持一致。
+const ORIGIN_META: Record<string, { label: string; tone: string }> = {
+  user_input: { label: "User input", tone: "bg-chart-1" },
+  assistant_output: { label: "Assistant output", tone: "bg-chart-5" },
+  tool_result: { label: "Tool result", tone: "bg-chart-6" },
+  manual_command: { label: "Manual command", tone: "bg-chart-6" },
+  runtime_injection: { label: "Runtime injection", tone: "bg-chart-7" },
+  session_state: { label: "Session state", tone: "bg-chart-7" },
+  agent_message: { label: "Agent message", tone: "bg-chart-2" },
+  goal_round: { label: "Goal round", tone: "bg-chart-7" },
+  instruction: { label: "Instruction", tone: "bg-chart-3" },
+  system_prompt: { label: "System prompt", tone: "bg-chart-3" },
+  clm_context: { label: "CLM context", tone: "bg-chart-3" },
 };
 
+/** 筛选器中来源的固定展示顺序；未收录来源排在末尾按字典序排列。 */
+export const ORIGIN_ORDER = Object.keys(ORIGIN_META);
+
 export function originTone(origin: string): string {
-  return ORIGIN_TONE[origin] ?? "bg-chart-3";
+  return ORIGIN_META[origin]?.tone ?? "bg-chart-3";
+}
+
+export function originLabel(origin: string): string {
+  const known = ORIGIN_META[origin]?.label;
+  if (known) return known;
+  // 未知 origin 兜底：下划线转空格并首字母大写，避免暴露原始 snake_case
+  const spaced = origin.replace(/_/g, " ");
+  return spaced ? spaced[0].toUpperCase() + spaced.slice(1) : origin;
 }
