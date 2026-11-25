@@ -1,6 +1,6 @@
 //! moc-cli：命令行入口。
 //!
-//! 日志只写 stderr：REPL / print 的 stdout 承载应答正文与工具输出，不能被日志污染。
+//! 行式与 ACP 前端日志写 stderr，避免污染 stdout；Web 前端落 `~/.moc/web.log`。
 
 #![forbid(unsafe_code)]
 
@@ -39,16 +39,82 @@ pub enum Frontend {
     Acp,
 }
 
+/// 单个 Web 日志文件的启动轮转上限（8 MiB，与 `moc-tui` 的 `tui.log` 对齐）。
+const MAX_WEB_LOG_BYTES: u64 = 8 * 1024 * 1024;
+
 pub async fn run(config: CliArgs, frontend: Frontend) -> anyhow::Result<()> {
     // 进程级资源采样（`/monitor` 的数据源）：所有前端形态共用同一个环形缓冲，
     // worker 子进程走独立入口不经过这里。
     moc_core::procstats::start();
-    // TUI 有 moc-tui 自己的文件日志；行式前端（REPL / print / --list / ACP）需要
-    // stderr 订阅者，否则内核的 warn/error（例如 MCP 配置解析失败）会直接消失。
-    if frontend != Frontend::Default || !repl::use_tui(&config) {
+    // TUI 有 moc-tui 自己的文件日志；Web 后台日志落 `~/.moc/web.log` 避免刷屏终端；
+    // 行式前端（REPL / print / --list / ACP）保留 stderr 订阅者，否则内核告警会丢失。
+    let web_log_path = if frontend == Frontend::Web {
+        init_web_logging()
+    } else {
+        if frontend != Frontend::Default || !repl::use_tui(&config) {
+            init_logging();
+        }
+        None
+    };
+    repl::run(config, frontend, web_log_path).await
+}
+
+/// 给 `moc web` 装文件日志订阅者，避免后台运行时日志刷屏占用终端。
+///
+/// 路径与 `moc-tui` 的 `tui.log` 对齐（`$MOC_HOME/web.log` 或 `~/.moc/web.log`）；
+/// 默认级别 `info`，可用 `RUST_LOG` / `MOC_LOG` 调整。打开文件失败时退回 stderr，
+/// 保证告警与错误不丢失。
+fn init_web_logging() -> Option<std::path::PathBuf> {
+    let path = web_log_path();
+    let Ok(file) = open_rotated_log_file(&path, MAX_WEB_LOG_BYTES) else {
         init_logging();
+        return None;
+    };
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::sync::Arc::new(file))
+        .with_ansi(false)
+        .with_target(true)
+        .with_max_level(log_level())
+        .try_init();
+    Some(path)
+}
+
+fn web_log_path() -> std::path::PathBuf {
+    let dir = std::env::var_os("MOC_HOME")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .filter(|value| !value.is_empty())
+                .map(|home| std::path::PathBuf::from(home).join(".moc"))
+        })
+        .unwrap_or_else(std::env::temp_dir);
+    dir.join("web.log")
+}
+
+/// 打开追加写入的日志文件：父目录不存在时自动创建；现有文件达到上限时先清理轮转。
+/// Unix 下以 `0600` 权限创建，避免诊断信息对同机其他用户可读。
+fn open_rotated_log_file(path: &std::path::Path, max_bytes: u64) -> std::io::Result<std::fs::File> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
     }
-    repl::run(config, frontend).await
+    if std::fs::metadata(path)
+        .ok()
+        .is_some_and(|metadata| metadata.len() >= max_bytes)
+    {
+        let _ = std::fs::remove_file(path);
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    opts.open(path)
 }
 
 /// 给行式前端装 stderr 订阅者；已经装过（库被其它前端嵌入）就沿用。
@@ -101,5 +167,24 @@ mod tests {
         assert_eq!(parse_level("error"), Some(tracing::Level::ERROR));
         assert_eq!(parse_level(""), None);
         assert_eq!(parse_level("moc=debug"), None);
+    }
+
+    #[test]
+    fn rotates_web_log_file_when_reaching_limit() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("web.log");
+
+        let mut file = open_rotated_log_file(&path, 16).unwrap();
+        file.write_all(b"0123456789abcdef").unwrap();
+        drop(file);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 16);
+
+        // 达到上限后再次打开会先轮转清空，再以追加方式写入新记录。
+        let mut rotated = open_rotated_log_file(&path, 16).unwrap();
+        rotated.write_all(b"fresh").unwrap();
+        drop(rotated);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "fresh");
     }
 }

@@ -66,6 +66,7 @@ session_required = { zh = "当前操作需要有效的 session", en = "A session
 bind_failed = { zh = "无法监听 127.0.0.1:%{port}：端口已被占用或权限不足", en = "Cannot listen on 127.0.0.1:%{port}: port in use or insufficient permissions" }
 port_fallback = { zh = "端口 %{port} 已被占用，改用随机端口 %{addr}", en = "Port %{port} is in use; falling back to random port %{addr}" }
 started = { zh = "moc web 已启动：%{url}", en = "moc web is running: %{url}" }
+log_file = { zh = "运行日志：%{path}", en = "Runtime log: %{path}" }
 opened = { zh = "已在浏览器中打开；如未自动弹出，请手动访问上面的地址", en = "Opened in the browser; if it did not pop up, visit the address above manually" }
 stop_hint = { zh = "按 Ctrl+C 停止服务", en = "Press Ctrl+C to stop the server" }
 not_found = { zh = "请求的资源不存在", en = "Resource not found" }

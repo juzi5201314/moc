@@ -48,6 +48,8 @@ pub struct WebOptions {
     pub token: String,
     /// 启动后用系统默认浏览器打开 WebUI。
     pub open_browser: bool,
+    /// 后台运行日志文件路径；存在时启动横幅会提示日志落盘位置。
+    pub log_path: Option<std::path::PathBuf>,
 }
 
 /// 启动 Web 前端，直到进程退出。
@@ -75,6 +77,12 @@ pub async fn run(core: Arc<Core>, options: WebOptions) -> anyhow::Result<()> {
 
     let url = format!("http://{addr}/?token={}", options.token);
     println!("{}", t!("web.err.started", url = url));
+    if let Some(log_path) = &options.log_path {
+        println!(
+            "{}",
+            t!("web.err.log_file", path = log_path.display().to_string())
+        );
+    }
     if options.open_browser {
         match browser::open(&url) {
             Ok(true) => println!("{}", t!("web.err.opened")),

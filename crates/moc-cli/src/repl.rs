@@ -35,13 +35,17 @@ fn input_reader() -> Input {
     Arc::new(AsyncMutex::new(receiver))
 }
 
-pub async fn run(args: CliArgs, frontend: crate::Frontend) -> anyhow::Result<()> {
+pub async fn run(
+    args: CliArgs,
+    frontend: crate::Frontend,
+    web_log_path: Option<PathBuf>,
+) -> anyhow::Result<()> {
     // json / stream-json 约定 stdout 始终可解析：提示前的任何失败（配置、
     // 会话建立、stdin 为空等）也落一行错误汇总；CliExit 的结果对象已在
     // finish_print 输出过，不重复。
     let early_format = (args.print && args.output_format != crate::args::OutputFormat::Text)
         .then_some(args.output_format);
-    let result = run_inner(args, frontend).await;
+    let result = run_inner(args, frontend, web_log_path).await;
     if let (Some(format), Err(error)) = (early_format, &result)
         && error.downcast_ref::<crate::CliExit>().is_none()
     {
@@ -50,7 +54,11 @@ pub async fn run(args: CliArgs, frontend: crate::Frontend) -> anyhow::Result<()>
     result
 }
 
-async fn run_inner(args: CliArgs, frontend: crate::Frontend) -> anyhow::Result<()> {
+async fn run_inner(
+    args: CliArgs,
+    frontend: crate::Frontend,
+    web_log_path: Option<PathBuf>,
+) -> anyhow::Result<()> {
     if frontend == crate::Frontend::Acp {
         validate_acp_args(&args)?;
     }
@@ -71,7 +79,7 @@ async fn run_inner(args: CliArgs, frontend: crate::Frontend) -> anyhow::Result<(
     // TerminalGuard Drop 恢复终端、连接 Drop 触发收尾），再统一执行 core.shutdown()，
     // 保证 raw mode 与 MCP 子进程都不因信号退出而丢失。
     let result = tokio::select! {
-        result = run_frontend(Arc::clone(&core), args, frontend) => result,
+        result = run_frontend(Arc::clone(&core), args, frontend, web_log_path) => result,
         signal = termination_signal() => {
             eprintln!("{}", t!("cli.repl.signal_exit", signal = signal));
             Ok(())
@@ -130,6 +138,7 @@ async fn run_frontend(
     core: Arc<Core>,
     args: CliArgs,
     frontend: crate::Frontend,
+    web_log_path: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     if frontend == crate::Frontend::Acp {
         return moc_acp::serve(
@@ -159,6 +168,7 @@ async fn run_frontend(
                 fallback,
                 token,
                 open_browser,
+                log_path: web_log_path,
             },
         )
         .await;
