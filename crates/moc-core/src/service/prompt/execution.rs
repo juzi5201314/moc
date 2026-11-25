@@ -139,8 +139,8 @@ pub(super) async fn run_prompt_locked(
     // 提示前给仍在首次握手的 MCP 极短宽限窗口，快服务首轮即可用，慢/卡死服务不阻塞任何模式（Standard/PTC/CLM）的提示。
     const MCP_PROMPT_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
     let cancel = ctx.cancel();
-    // 一次提示内已就绪 MCP 的工具集合保持固定；宽限期内未完成握手的慢服务在后台继续连接，就绪后由目录惰性吸收。
-    let mcp = inner
+    // 一次提示内按每轮边界同步 MCP 状态与工具变更；宽限期内未完成握手的慢服务在后台继续连接。
+    let mut mcp = inner
         .project_mcp(std::path::Path::new(&state_snapshot.session.cwd))
         .await
         .map_err(to_rpc)?;
@@ -174,17 +174,6 @@ pub(super) async fn run_prompt_locked(
             )
             .await
             .map_err(protocol_to_rpc)?;
-    }
-    for notice in mcp.drain_notices().await {
-        record
-            .state
-            .lock()
-            .await
-            .notices
-            .push(crate::session::state::SessionNotice::new(format!(
-                "MCP `{}`: {}",
-                notice.server, notice.message
-            )));
     }
     let mcp_snapshot = mcp.snapshot().await;
     // 加载期失败的插件只有在宿主建好后才有通知：先把积压送达模型与前端。
@@ -247,7 +236,8 @@ pub(super) async fn run_prompt_locked(
         &project_config,
     )
     .unwrap_or_default();
-    // 目录、模式和窗口在本次提示内固定；若首轮宽限期内未完成握手的慢 MCP 在后续轮次就绪，PTC 索引同步补全。
+    // 目录在每轮请求前同步 MCP 状态、工具集及配置重载；变化时通过尾部提醒告知模型，不改写系统前缀。
+    let mut catalog_rev = catalog.revision();
     let mut mcp_index = crate::tools::declarations::render_mcp_index(
         &catalog,
         engine,
@@ -256,6 +246,7 @@ pub(super) async fn run_prompt_locked(
         &project_config,
         model.context_window,
     );
+    let mut mcp_state = crate::tools::declarations::render_mcp_state(&catalog);
     let (context_files, context_warning) =
         inner.prompt_context_files(&params.session_id, &cwd).await;
     if let Some(message) = context_warning {
@@ -329,15 +320,16 @@ pub(super) async fn run_prompt_locked(
                 crate::agents::drain_inbox(&inner, &update, &params.session_id, false)
                     .await
                     .map_err(to_rpc)?;
-                for notice in mcp.drain_notices().await {
-                    record.state.lock().await.notices.push(
-                        crate::session::state::SessionNotice::new(format!(
-                            "MCP `{}`: {}",
-                            notice.server, notice.message
-                        )),
-                    );
+                if let Ok(latest_mcp) = inner.project_mcp(&cwd).await
+                    && !Arc::ptr_eq(&mcp, &latest_mcp)
+                {
+                    mcp = latest_mcp;
+                    mcp.start().await;
                 }
-                if catalog.absorb_pending() {
+                catalog.sync(&mcp);
+                let next_rev = catalog.revision();
+                if next_rev != catalog_rev {
+                    catalog_rev = next_rev;
                     mcp_index = crate::tools::declarations::render_mcp_index(
                         &catalog,
                         engine,
@@ -346,6 +338,7 @@ pub(super) async fn run_prompt_locked(
                         &project_config,
                         model.context_window,
                     );
+                    mcp_state = crate::tools::declarations::render_mcp_state(&catalog);
                 }
                 let candidates = reminders::prepare(reminders::Scope {
                     inner: &inner,
@@ -361,6 +354,7 @@ pub(super) async fn run_prompt_locked(
                     permission,
                     roster: &roster,
                     mcp_index: &mcp_index,
+                    mcp_state: &mcp_state,
                     cycle_redirect: cycle_redirect.take(),
                     thinking_redirect: thinking_redirect.take(),
                     first_turn,
@@ -418,9 +412,16 @@ pub(super) async fn run_prompt_locked(
                                 break 'turns;
                             }
                             // 压缩重写了可见历史，先前写进去的提醒可能被摘要取代；
-                            // 状态层已经清空去重表，这里补一份仍生效的条目。
-                            flush_reminders(&inner, &params.session_id, &record, &candidates)
-                                .await?;
+                            // 状态层已经清空去重表，这里补一份仍生效的持久/基线条目（不重发一次性通知）。
+                            flush_reminders(
+                                &inner,
+                                &params.session_id,
+                                &record,
+                                engine,
+                                &candidates,
+                                false,
+                            )
+                            .await?;
                             inputs = {
                                 let state = record.state.lock().await;
                                 turn_inputs(&state, &system.messages, &model, &tools_available)
@@ -587,8 +588,15 @@ pub(super) async fn run_prompt_locked(
                                 final_reason = FinishReason::Other("compacted".into());
                                 break 'turns;
                             }
-                            flush_reminders(&inner, &params.session_id, &record, &candidates)
-                                .await?;
+                            flush_reminders(
+                                &inner,
+                                &params.session_id,
+                                &record,
+                                engine,
+                                &candidates,
+                                false,
+                            )
+                            .await?;
                             inputs = {
                                 let state = record.state.lock().await;
                                 turn_inputs(&state, &system.messages, &model, &tools_available)

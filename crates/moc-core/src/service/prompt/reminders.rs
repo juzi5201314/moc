@@ -28,6 +28,7 @@ pub(super) struct Scope<'a> {
     pub(super) permission: moc_protocol::SessionPermission,
     pub(super) roster: &'a Option<String>,
     pub(super) mcp_index: &'a Option<String>,
+    pub(super) mcp_state: &'a Option<crate::tools::declarations::McpStateReminder>,
     pub(super) cycle_redirect: Option<String>,
     pub(super) thinking_redirect: Option<String>,
     pub(super) first_turn: bool,
@@ -48,6 +49,7 @@ pub(super) async fn prepare(scope: Scope<'_>) -> Result<Vec<Reminder>, RpcError>
         permission,
         roster,
         mcp_index,
+        mcp_state,
         mut cycle_redirect,
         mut thinking_redirect,
         first_turn,
@@ -153,6 +155,23 @@ pub(super) async fn prepare(scope: Scope<'_>) -> Result<Vec<Reminder>, RpcError>
             "The earlier MCP index no longer applies. Discover currently available tools through catalog.search().",
         ));
     }
+    // MCP server 状态与工具集合快照：全员正常时静默记基线，仅异常或相对上次快照变更时注入一次。
+    if let Some(state) = mcp_state {
+        let item = if state.has_issue {
+            Reminder::durable_with_fingerprint(
+                reminder::key::MCP_STATE,
+                state.text.clone(),
+                state.fingerprint.clone(),
+            )
+        } else {
+            Reminder::baseline_with_fingerprint(
+                reminder::key::MCP_STATE,
+                state.text.clone(),
+                state.fingerprint.clone(),
+            )
+        };
+        candidates.push(item);
+    }
     if let Some(detail) = cycle_redirect.take() {
         candidates.push(Reminder::once(
             reminder::key::CYCLE,
@@ -237,6 +256,6 @@ pub(super) async fn prepare(scope: Scope<'_>) -> Result<Vec<Reminder>, RpcError>
             ));
         }
     }
-    flush_reminders(inner, session_id, record, &candidates).await?;
+    flush_reminders(inner, session_id, record, engine, &candidates, true).await?;
     Ok(candidates)
 }

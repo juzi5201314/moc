@@ -120,13 +120,6 @@ pub enum ServerStatus {
     Disabled,
 }
 
-/// 发往用户的通知；core 会转成 system-reminder 注入会话。
-#[derive(Debug, Clone)]
-pub struct McpNotice {
-    pub server: String,
-    pub message: String,
-}
-
 /// 面向前端与诊断命令的单 server 运行态视图。
 #[derive(Debug, Clone)]
 pub struct McpServerState {
@@ -234,8 +227,6 @@ pub struct McpManager {
     shutdown: CancellationToken,
     slots: BTreeMap<String, Arc<ServerSlot>>,
     status_version: watch::Sender<u64>,
-    notices: mpsc::UnboundedSender<McpNotice>,
-    notices_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<McpNotice>>>,
     tasks: tokio::sync::Mutex<tokio::task::JoinSet<()>>,
     policy: ReconnectPolicy,
     /// 调用时限按实例注入；None 按各 server 的 `call_timeout_secs` 生效。
@@ -319,7 +310,6 @@ impl McpManager {
         policy: ReconnectPolicy,
         call_timeout: Option<Duration>,
     ) -> Arc<Self> {
-        let (notices, notices_rx) = mpsc::unbounded_channel();
         let (status_version, _) = watch::channel(0u64);
         let mut slots = BTreeMap::new();
         for config in servers {
@@ -354,8 +344,6 @@ impl McpManager {
             shutdown,
             slots,
             status_version,
-            notices,
-            notices_rx: tokio::sync::Mutex::new(Some(notices_rx)),
             tasks: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
             policy,
             call_timeout,
@@ -388,7 +376,6 @@ impl McpManager {
             epoch,
             cancel,
             self.shutdown.clone(),
-            self.notices.clone(),
             self.policy,
         ));
     }
@@ -566,19 +553,6 @@ impl McpManager {
     /// 是否没有配置任何 server。
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
-    }
-
-    /// 取走已累积的通知；通道在构建后长期保留，可反复调用。
-    pub async fn drain_notices(&self) -> Vec<McpNotice> {
-        let mut guard = self.notices_rx.lock().await;
-        let Some(receiver) = guard.as_mut() else {
-            return Vec::new();
-        };
-        let mut notices = Vec::new();
-        while let Ok(notice) = receiver.try_recv() {
-            notices.push(notice);
-        }
-        notices
     }
 
     /// 全量快照（同步版）：状态表 + 已连接工具（按限定名排序）。
@@ -982,7 +956,6 @@ async fn supervise(
     epoch: u64,
     slot_cancel: CancellationToken,
     shutdown: CancellationToken,
-    notices: mpsc::UnboundedSender<McpNotice>,
     policy: ReconnectPolicy,
 ) {
     if !slot.config.enabled {
@@ -1019,11 +992,8 @@ async fn supervise(
             _ = slot_cancel.cancelled() => break 'supervise,
             result = tokio::time::timeout(connect_timeout, established) => result,
         };
-        let failure_error: String;
-        let was_connected: bool;
-        match established {
+        let failure_error: String = match established {
             Ok(Ok((peer, tools, mut service))) => {
-                let tool_count = tools.len();
                 let instructions = peer
                     .peer_info()
                     .and_then(|info| info.instructions.as_deref().map(Arc::from));
@@ -1043,10 +1013,6 @@ async fn supervise(
                 }
                 // 稳定性从握手成功起算：连接尝试耗时长不该算成「稳定运行」
                 let connected_at = Instant::now();
-                let _ = notices.send(McpNotice {
-                    server: server.clone(),
-                    message: format!("Connected ({tool_count} tools)"),
-                });
 
                 let connection_lost;
                 let mut closed_tick = tokio::time::interval(policy.close_poll);
@@ -1081,8 +1047,7 @@ async fn supervise(
                                         Ok(tools) => tools,
                                         Err(error) => {
                                             let message = error.to_string();
-                                            slot.set_phase_for_epoch(epoch, Phase::Failed { error: message.clone() });
-                                            let _ = notices.send(McpNotice { server: server.clone(), message });
+                                            slot.set_phase_for_epoch(epoch, Phase::Failed { error: message });
                                             tokio::spawn(async move {
                                                 let _ = service.close_with_timeout(GRACEFUL_CLOSE_TIMEOUT).await;
                                             });
@@ -1107,10 +1072,6 @@ async fn supervise(
                                     }
                                     if replaced {
                                         slot.status_version.send_modify(|version| *version += 1);
-                                        let _ = notices.send(McpNotice {
-                                            server: server.clone(),
-                                            message: format!("Tool list updated ({count} tools)"),
-                                        });
                                     }
                                 }
                                 Ok(Err(error)) => {
@@ -1145,28 +1106,17 @@ async fn supervise(
                 if connected_at.elapsed() >= policy.stable_runtime {
                     attempts = 0;
                 }
-                was_connected = true;
-                failure_error = "connection interrupted".into();
+                "connection interrupted".into()
             }
             Ok(Err(McpError::Tool(message))) => {
                 slot.attempt_started_at_ms.store(0, Ordering::Release);
-                slot.set_phase_for_epoch(
-                    epoch,
-                    Phase::Failed {
-                        error: message.clone(),
-                    },
-                );
-                let _ = notices.send(McpNotice {
-                    server: server.clone(),
-                    message,
-                });
+                slot.set_phase_for_epoch(epoch, Phase::Failed { error: message });
                 break 'supervise;
             }
             Ok(Err(error)) => {
                 let message = error.to_string();
                 tracing::warn!(server = %server, %error, "MCP 连接失败");
-                was_connected = false;
-                failure_error = message;
+                message
             }
             Err(_) => {
                 let message = format!(
@@ -1174,23 +1124,18 @@ async fn supervise(
                     connect_timeout.as_secs()
                 );
                 tracing::warn!(server = %server, "MCP 连接超时");
-                was_connected = false;
-                failure_error = message;
+                message
             }
-        }
+        };
         attempts += 1;
         if attempts > policy.max_attempts {
             slot.attempt_started_at_ms.store(0, Ordering::Release);
             slot.set_phase_for_epoch(
                 epoch,
                 Phase::Failed {
-                    error: failure_error.clone(),
+                    error: failure_error,
                 },
             );
-            let _ = notices.send(McpNotice {
-                server: server.clone(),
-                message: format!("Connection failed; retries abandoned: {failure_error}"),
-            });
             break 'supervise;
         }
         slot.attempt_started_at_ms.store(0, Ordering::Release);
@@ -1198,21 +1143,10 @@ async fn supervise(
             epoch,
             Phase::Reconnecting {
                 attempts,
-                error: failure_error.clone(),
+                error: failure_error,
             },
         ) {
             break 'supervise;
-        }
-        if was_connected {
-            let _ = notices.send(McpNotice {
-                server: server.clone(),
-                message: "Connection interrupted; reconnecting".into(),
-            });
-        } else if attempts == 1 {
-            let _ = notices.send(McpNotice {
-                server: server.clone(),
-                message: format!("Initial connection failed; retrying: {failure_error}"),
-            });
         }
         let delay = policy.backoff(attempts);
         tokio::select! {

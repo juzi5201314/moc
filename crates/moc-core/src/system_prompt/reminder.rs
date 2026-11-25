@@ -18,6 +18,8 @@ pub mod key {
     pub const ENGINE: &str = "engine";
     pub const MODE: &str = "mode";
     pub const MCP_INDEX: &str = "mcp-index";
+    /// MCP server 状态与工具集合快照（正常基线静默记录，异常或变更时注入）。
+    pub const MCP_STATE: &str = "mcp-state";
     pub const ROSTER: &str = "roster";
     pub const TODO_STALL: &str = "todo-stall";
     pub const LOCAL_TIME: &str = "local-time";
@@ -39,6 +41,9 @@ pub enum ReminderKind {
     /// 它本身记入去重表，所以同一份撤回只写一次。条目不再产生时旧提醒仍留在
     /// 历史里，撤回项是把「没有新条目」这个事实讲给模型听的方式。
     Retract,
+    /// 基线跟踪条目：历史里尚无此 key 时仅静默记录摘要、不向模型发送正文；
+    /// 已有历史摘要且发生变化时，注入正文并更新摘要。
+    Baseline,
 }
 
 /// 一个待注入的运行时提醒条目。
@@ -50,6 +55,8 @@ pub struct Reminder {
     pub text: String,
     /// 注入策略。
     pub kind: ReminderKind,
+    /// 可选的去重指纹覆盖；`None` 时直接对 `text` 计算摘要。
+    pub fingerprint: Option<String>,
 }
 
 impl Reminder {
@@ -59,6 +66,27 @@ impl Reminder {
             key,
             text,
             kind: ReminderKind::Durable,
+            fingerprint: None,
+        }
+    }
+
+    /// 带独立去重指纹的持久条目：指纹不变则不重发，正文保持紧凑展示。
+    pub fn durable_with_fingerprint(key: &'static str, text: String, fingerprint: String) -> Self {
+        Self {
+            key,
+            text,
+            kind: ReminderKind::Durable,
+            fingerprint: Some(fingerprint),
+        }
+    }
+
+    /// 带独立去重指纹的基线跟踪条目：首次静默记基线，后续指纹变化时注入。
+    pub fn baseline_with_fingerprint(key: &'static str, text: String, fingerprint: String) -> Self {
+        Self {
+            key,
+            text,
+            kind: ReminderKind::Baseline,
+            fingerprint: Some(fingerprint),
         }
     }
 
@@ -68,6 +96,7 @@ impl Reminder {
             key,
             text,
             kind: ReminderKind::Once,
+            fingerprint: None,
         }
     }
 
@@ -77,7 +106,13 @@ impl Reminder {
             key,
             text: text.into(),
             kind: ReminderKind::Retract,
+            fingerprint: None,
         }
+    }
+
+    /// 用于去重表比对的条目摘要。
+    pub fn item_digest(&self) -> String {
+        digest(self.fingerprint.as_deref().unwrap_or(&self.text))
     }
 }
 
@@ -86,24 +121,47 @@ pub fn digest(text: &str) -> String {
     format!("{:032x}", xxhash_rust::xxh3::xxh3_128(text.as_bytes()))
 }
 
-/// 从候选条目里挑出需要注入的那些。
+/// 提醒筛选结果：区分为待注入正文与仅静默记入去重表的基线。
+#[derive(Debug, Default)]
+pub struct Selection<'a> {
+    pub emit: Vec<&'a Reminder>,
+    pub record_only: Vec<&'a Reminder>,
+}
+
+/// 从候选条目里挑出需要注入或静默记基线的条目。
 ///
-/// 一次性条目总是入选；持久条目只在从未注入或正文变化时入选；撤回条目只在
-/// 历史里已有同 key 条目且还没撤回过时入选。
-pub fn pending<'a>(
+/// 一次性条目总是入选；持久条目在从未注入或摘要变化时入选；撤回条目只在
+/// 历史里已有同 key 条目且还没撤回过时入选；基线条目在首次出现时静默记录
+/// 摘要，后续摘要变化时才注入正文。
+pub fn select<'a>(
     candidates: &'a [Reminder],
     known: &BTreeMap<String, String>,
-) -> Vec<&'a Reminder> {
-    candidates
-        .iter()
-        .filter(|reminder| match reminder.kind {
-            ReminderKind::Once => true,
-            ReminderKind::Durable => known.get(reminder.key) != Some(&digest(&reminder.text)),
-            ReminderKind::Retract => known
-                .get(reminder.key)
-                .is_some_and(|known| *known != digest(&reminder.text)),
-        })
-        .collect()
+) -> Selection<'a> {
+    let mut selection = Selection::default();
+    for reminder in candidates {
+        match reminder.kind {
+            ReminderKind::Once => selection.emit.push(reminder),
+            ReminderKind::Durable => {
+                if known.get(reminder.key) != Some(&reminder.item_digest()) {
+                    selection.emit.push(reminder);
+                }
+            }
+            ReminderKind::Retract => {
+                if known
+                    .get(reminder.key)
+                    .is_some_and(|prev| *prev != reminder.item_digest())
+                {
+                    selection.emit.push(reminder);
+                }
+            }
+            ReminderKind::Baseline => match known.get(reminder.key) {
+                None => selection.record_only.push(reminder),
+                Some(prev) if *prev != reminder.item_digest() => selection.emit.push(reminder),
+                Some(_) => {}
+            },
+        }
+    }
+    selection
 }
 
 /// 把选中的条目渲染成一条 [`Role::Custom`] 消息，并给出要记进历史的条目摘要。
@@ -111,18 +169,22 @@ pub fn pending<'a>(
 /// 每个条目各自包一层 `<system-reminder>`：模型据此区分提醒与用户输入，人也认得。
 /// 角色本身已经是 `Custom`，所以重放与压缩不必再嗅探这个前缀。条目之间空一行。
 /// 自带系统级标签的条目（如 `<system-interrupt>`）不再套壳，保留原标签语义。
-pub fn render(selected: &[&Reminder]) -> (Message, Vec<ReminderItem>) {
-    let text = selected
+/// 静默基线条目不进入消息正文，但其摘要一并写入 `items` 落盘。
+pub fn render(selection: &Selection<'_>) -> (Message, Vec<ReminderItem>) {
+    let text = selection
+        .emit
         .iter()
         .map(|reminder| wrap(&reminder.text))
         .collect::<Vec<_>>()
         .join("\n\n");
-    let items = selected
+    let items = selection
+        .emit
         .iter()
         .filter(|reminder| reminder.kind != ReminderKind::Once)
+        .chain(selection.record_only.iter())
         .map(|reminder| ReminderItem {
             key: reminder.key.to_owned(),
-            digest: digest(&reminder.text),
+            digest: reminder.item_digest(),
         })
         .collect();
     (Message::custom(text), items)
@@ -226,24 +288,23 @@ mod tests {
             Reminder::durable(key::MODE, "Ask mode is active.".into()),
         ];
 
-        let first = pending(&candidates, &BTreeMap::new());
-        assert_eq!(first.len(), 2);
+        let first = select(&candidates, &BTreeMap::new());
+        assert_eq!(first.emit.len(), 2);
         let (message, items) = render(&first);
         assert_eq!(items.len(), 2);
         assert!(message.text().contains("<system-reminder>Sandbox mode"));
         assert!(message.text().contains("<system-reminder>Ask mode"));
 
-        assert!(
-            pending(&candidates, &known_of(items)).is_empty(),
-            "内容没变就不该再注入"
-        );
+        let next = select(&candidates, &known_of(items));
+        assert!(next.emit.is_empty(), "内容没变就不该再注入");
+        assert!(next.record_only.is_empty());
     }
 
     #[test]
     fn only_the_changed_entry_is_pending() {
         let mode = Reminder::durable(key::MODE, "Ask mode is active.".into());
         let known = known_of(
-            render(&pending(
+            render(&select(
                 &[
                     Reminder::durable(key::SANDBOX, "Sandbox mode: workspace.".into()),
                     mode.clone(),
@@ -257,9 +318,9 @@ mod tests {
             Reminder::durable(key::SANDBOX, "Sandbox mode: full.".into()),
             mode,
         ];
-        let changed = pending(&changed_entries, &known);
-        assert_eq!(changed.len(), 1, "只有沙盒变了");
-        assert_eq!(changed[0].key, key::SANDBOX);
+        let changed = select(&changed_entries, &known);
+        assert_eq!(changed.emit.len(), 1, "只有沙盒变了");
+        assert_eq!(changed.emit[0].key, key::SANDBOX);
         let (message, items) = render(&changed);
         assert!(message.text().contains("Sandbox mode: full"));
         assert!(!message.text().contains("Ask mode"), "未变的模式不该重发");
@@ -271,8 +332,8 @@ mod tests {
         let notice = Reminder::once(key::NOTICE, "后台任务完成。".into());
         let known = BTreeMap::from([(key::NOTICE.to_owned(), digest("后台任务完成。"))]);
 
-        let selected = pending(std::slice::from_ref(&notice), &known);
-        assert_eq!(selected.len(), 1, "一次性条目相同文本也要重发");
+        let selected = select(std::slice::from_ref(&notice), &known);
+        assert_eq!(selected.emit.len(), 1, "一次性条目相同文本也要重发");
         let (_, items) = render(&selected);
         assert!(items.is_empty(), "一次性条目不该被记下去重表");
     }
@@ -284,25 +345,72 @@ mod tests {
 
         let candidates = [retract()];
         assert!(
-            pending(&candidates, &BTreeMap::new()).is_empty(),
+            select(&candidates, &BTreeMap::new()).emit.is_empty(),
             "历史里没有同 key 条目时撤回无事可撤"
         );
 
         let candidates = [durable()];
-        let known = known_of(render(&pending(&candidates, &BTreeMap::new())).1);
+        let known = known_of(render(&select(&candidates, &BTreeMap::new())).1);
         let candidates = [retract()];
-        let selected = pending(&candidates, &known);
-        assert_eq!(selected.len(), 1, "条目消失后撤回一次");
+        let selected = select(&candidates, &known);
+        assert_eq!(selected.emit.len(), 1, "条目消失后撤回一次");
         let (_, items) = render(&selected);
         assert_eq!(items.len(), 1, "撤回本身记入去重表");
         let known = known_of(items);
 
         assert!(
-            pending(&candidates, &known).is_empty(),
+            select(&candidates, &known).emit.is_empty(),
             "撤回已记录就不再重复注入"
         );
         let candidates = [durable()];
-        assert_eq!(pending(&candidates, &known).len(), 1, "条目恢复时重新注入");
+        assert_eq!(
+            select(&candidates, &known).emit.len(),
+            1,
+            "条目恢复时重新注入"
+        );
+    }
+
+    #[test]
+    fn baseline_records_silently_then_emits_only_on_fingerprint_change() {
+        let base_other = Reminder::durable(key::SANDBOX, "Sandbox mode: full.".into());
+        let ok_v1 = Reminder::baseline_with_fingerprint(
+            key::MCP_STATE,
+            "MCP servers updated: tavily (connected, 5 tools).".into(),
+            "tavily\tconnected\ta,b,c,d,e".into(),
+        );
+        let first_candidates = [base_other.clone(), ok_v1.clone()];
+        let first = select(&first_candidates, &BTreeMap::new());
+        assert_eq!(first.emit.len(), 1, "首轮正常基线不发送正文");
+        assert_eq!(first.emit[0].key, key::SANDBOX);
+        assert_eq!(first.record_only.len(), 1);
+        assert_eq!(first.record_only[0].key, key::MCP_STATE);
+        let (msg, items) = render(&first);
+        assert!(!msg.text().contains("tavily"), "静默基线不能出现在消息正文");
+        assert_eq!(items.len(), 2, "静默基线摘要应随本轮提醒一起落盘");
+        let known = known_of(items);
+
+        // 指纹不变（如进程重启后同状态）：不发送也不再记录。
+        let same_candidates = [base_other.clone(), ok_v1];
+        let same = select(&same_candidates, &known);
+        assert!(same.emit.is_empty());
+        assert!(same.record_only.is_empty());
+
+        // 工具名变化（即使数量仍是 5、展示正文相同）：指纹变化，必须注入。
+        let ok_v2 = Reminder::baseline_with_fingerprint(
+            key::MCP_STATE,
+            "MCP servers updated: tavily (connected, 5 tools).".into(),
+            "tavily\tconnected\ta,b,c,d,f".into(),
+        );
+        let changed_candidates = [base_other, ok_v2.clone()];
+        let changed = select(&changed_candidates, &known);
+        assert_eq!(changed.emit.len(), 1);
+        assert_eq!(changed.emit[0].key, key::MCP_STATE);
+        let (msg2, items2) = render(&changed);
+        assert!(msg2.text().contains("tavily (connected, 5 tools)"));
+        let mut known2 = known;
+        known2.extend(known_of(items2));
+        let settled_candidates = [ok_v2];
+        assert!(select(&settled_candidates, &known2).emit.is_empty());
     }
 
     #[test]
@@ -311,7 +419,8 @@ mod tests {
             key::CYCLE,
             "<system-interrupt reason=\"tool_loop\">stop.</system-interrupt>".into(),
         );
-        let (message, _) = render(&[&interrupt]);
+        let selected = select(std::slice::from_ref(&interrupt), &BTreeMap::new());
+        let (message, _) = render(&selected);
         let text = message.text();
         assert!(text.starts_with("<system-interrupt"));
         assert!(!text.contains("<system-reminder>"));

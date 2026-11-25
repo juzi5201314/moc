@@ -401,6 +401,7 @@ async fn list_changed_notification_refreshes_tools() {
     let tools = connected_tools(&manager, Duration::from_secs(5)).await;
     assert_eq!(tools.len(), 7);
 
+    let before_version = manager.status_version();
     let refresh = tools.iter().find(|t| t.name == "refresh").unwrap();
     manager
         .call(refresh, json!({}), CancellationToken::new(), None)
@@ -419,12 +420,9 @@ async fn list_changed_notification_refreshes_tools() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let notices = manager.drain_notices().await;
     assert!(
-        notices
-            .iter()
-            .any(|notice| notice.message.contains("Tool list updated")),
-        "expected a tool-list update notice: {notices:?}"
+        manager.status_version() > before_version,
+        "工具列表更新后应递增状态版本号以通知目录同步"
     );
     manager.shutdown().await;
 }

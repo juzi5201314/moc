@@ -94,23 +94,63 @@ fn turn_inputs(
 
 /// 把候选提醒里变化过的条目写进历史。
 ///
-/// 只写变化的部分：条目正文的摘要与历史里那份相同就跳过，所以一次提示里的后续请求
+/// 只写变化的部分：条目摘要与历史里那份相同就跳过，所以一次提示里的后续请求
 /// 不再重复注入。写进去的提醒成为历史的一部分，可以吃到前缀缓存。
+/// `include_once` 为假时跳过一次性条目（压缩后补刷持久与基线条目专用，避免重发本轮通知）。
 async fn flush_reminders(
     inner: &Arc<CoreInner>,
     session_id: &str,
     record: &Arc<crate::session::SessionRecord>,
+    engine: moc_protocol::SessionEngine,
     candidates: &[Reminder],
+    include_once: bool,
 ) -> Result<(), RpcError> {
-    // `pending` 的返回值只借用 `candidates`，所以状态锁在块结束时就能释放。
-    let selected = {
-        let state = record.state.lock().await;
-        reminder::pending(candidates, &state.reminder_digests)
+    let filtered: Vec<Reminder>;
+    let slice = if include_once {
+        candidates
+    } else {
+        filtered = candidates
+            .iter()
+            .filter(|item| item.kind != reminder::ReminderKind::Once)
+            .cloned()
+            .collect();
+        &filtered
     };
-    if selected.is_empty() {
-        return Ok(());
+    let (message, items, clm_mcp_state) = {
+        let mut state = record.state.lock().await;
+        let selection = reminder::select(slice, &state.reminder_digests);
+        if selection.emit.is_empty() {
+            // 仅存在静默基线（例如升级后首次打开老会话且无其它提醒变化）：
+            // 直接记入内存去重表，不往 transcript 写空正文消息。
+            for item in selection.record_only {
+                state
+                    .reminder_digests
+                    .insert(item.key.to_owned(), item.item_digest());
+            }
+            return Ok(());
+        }
+        let clm_mcp_state = (engine == moc_protocol::SessionEngine::ClmExperimental)
+            .then(|| {
+                selection
+                    .emit
+                    .iter()
+                    .find(|item| item.key == reminder::key::MCP_STATE)
+                    .map(|item| reminder::wrap(&item.text))
+            })
+            .flatten();
+        let (message, items) = reminder::render(&selection);
+        (message, items, clm_mcp_state)
+    };
+    if let Some(text) = clm_mcp_state {
+        crate::tools::clm::append_message(
+            &inner.sessions,
+            &record.state,
+            session_id,
+            &Message::custom(text),
+        )
+        .await
+        .map_err(to_rpc)?;
     }
-    let (message, items) = reminder::render(&selected);
     inner
         .sessions
         .append_reminder(session_id, message, items)

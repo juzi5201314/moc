@@ -925,3 +925,339 @@ async fn web_widget_prompt_and_doc_follow_frontend_and_web_state() {
 
     h.close().await;
 }
+
+/// MCP 不再推送一次性连接通知，改为基于状态指纹的基线/变更提醒：
+/// 首轮全正常静默记基线，无变化重连不重复注入，空闲变更在下一次消息前注入，
+/// 同一次提示多轮途中变更在下一模型请求当场注入。
+#[tokio::test]
+async fn mcp_state_reminder_injects_only_on_change_not_steady_or_reconnect() {
+    use moc_protocol::{
+        AskAnswer, AskResult, McpList, McpListParams, McpReconnect, McpReconnectParams,
+        McpServerPhase, SessionRequestAsk,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let mcp_phase = Arc::new(AtomicUsize::new(0));
+    let mcp_phase_srv = Arc::clone(&mcp_phase);
+    let mcp_server = MockServer::builder().start().await;
+    Mock::given(method("GET"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&mcp_server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&mcp_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(move |req: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
+            let id = body.get("id").cloned();
+            let method_name = body["method"].as_str().unwrap_or_default();
+            match method_name {
+                "server/discover" => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32601, "message": "Method not found" }
+                })),
+                "initialize" => ResponseTemplate::new(200)
+                    .insert_header("Mcp-Session-Id", "mock-mcp-session")
+                    .set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": { "tools": {} },
+                            "serverInfo": { "name": "tavily", "version": "1.0.0" }
+                        }
+                    })),
+                "notifications/initialized" => ResponseTemplate::new(202),
+                "tools/list" => {
+                    let tools = match mcp_phase_srv.load(Ordering::SeqCst) {
+                        0 => serde_json::json!([
+                            { "name": "search", "description": "Search web", "inputSchema": { "type": "object" } }
+                        ]),
+                        1 => serde_json::json!([
+                            { "name": "search", "description": "Search web", "inputSchema": { "type": "object" } },
+                            { "name": "extract", "description": "Extract page", "inputSchema": { "type": "object" } }
+                        ]),
+                        _ => serde_json::json!([
+                            { "name": "search", "description": "Search web", "inputSchema": { "type": "object" } },
+                            { "name": "map", "description": "Map site", "inputSchema": { "type": "object" } }
+                        ]),
+                    };
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": { "tools": tools }
+                    }))
+                }
+                _ => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32601, "message": "Method not found" }
+                })),
+            }
+        })
+        .mount(&mcp_server)
+        .await;
+
+    let llm_step = Arc::new(AtomicUsize::new(0));
+    let llm_step_srv = Arc::clone(&llm_step);
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(move |_: &wiremock::Request| {
+            let step = llm_step_srv.fetch_add(1, Ordering::SeqCst);
+            let stream = if step == 3 {
+                // 第 4 条 prompt 的第 1 轮调用 ask，借工具执行空窗触发运行中 MCP 变更。
+                support::tool_stream(vec![(
+                    "call_ask",
+                    "ask",
+                    serde_json::json!({
+                        "questions": [{
+                            "id": "q1",
+                            "question": "Proceed?",
+                            "options": [{ "label": "Yes" }, { "label": "No" }]
+                        }]
+                    }),
+                )])
+            } else {
+                text_stream("ok")
+            };
+            ResponseTemplate::new(200).set_body_raw(stream, "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+
+    let h = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    std::fs::write(
+        h.root.path().join("home").join("mcp.json"),
+        serde_json::json!({
+            "mcpServers": {
+                "tavily": { "url": format!("{}/mcp", mcp_server.uri()) }
+            }
+        })
+        .to_string(),
+    )
+    .expect("write mcp.json");
+
+    // 单独的管理连接，用于重连 MCP 并轮询就绪；避免在反向请求回调内自调用重入。
+    let (admin_server_side, admin_client_side) = moc_protocol::transport::duplex(65536);
+    let admin_conn = h.server.spawn(admin_server_side);
+    let (admin_client, _) = moc_protocol::ClientBuilder::new(moc_protocol::ClientInfo {
+        name: "mcp-admin".into(),
+        version: "1".into(),
+        frontend: "test".into(),
+    })
+    .connect(admin_client_side)
+    .await
+    .expect("connect admin client");
+
+    let wait_connected = |client: moc_protocol::ClientHandle, expected_tools: usize| async move {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let snapshot = client
+                .call::<McpList>(McpListParams::default())
+                .await
+                .expect("mcp/list");
+            if snapshot.servers.iter().any(|server| {
+                server.name == "tavily"
+                    && server.phase == McpServerPhase::Connected
+                    && server.tool_count == expected_tools
+            }) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "等待 MCP 连接就绪超时：{snapshot:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    };
+
+    // 主测试连接：支持 ask，并在收到 ask 时切换 MCP 工具名（数量同为 2，但工具名变了）。
+    let (server_side, client_side) = moc_protocol::transport::duplex(65536);
+    let conn = h.server.spawn(server_side);
+    let ask_phase = Arc::clone(&mcp_phase);
+    let ask_admin = admin_client.clone();
+    let (client, _) = moc_protocol::ClientBuilder::new(moc_protocol::ClientInfo {
+        name: "mcp-test".into(),
+        version: "1".into(),
+        frontend: "test".into(),
+    })
+    .capabilities(moc_protocol::ClientCapabilities {
+        permission_requests: true,
+        ask_requests: true,
+    })
+    .on_request::<SessionRequestAsk, _, _>(move |_params, _ctx| {
+        let phase = Arc::clone(&ask_phase);
+        let admin = ask_admin.clone();
+        async move {
+            phase.store(2, Ordering::SeqCst);
+            admin
+                .call::<McpReconnect>(McpReconnectParams {
+                    server: Some("tavily".into()),
+                    ..Default::default()
+                })
+                .await
+                .expect("mid-prompt mcp reconnect");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let snapshot = admin
+                    .call::<McpList>(McpListParams::default())
+                    .await
+                    .expect("mcp/list");
+                if snapshot
+                    .servers
+                    .iter()
+                    .any(|s| s.name == "tavily" && s.phase == McpServerPhase::Connected)
+                {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Ok(AskResult {
+                answers: vec![AskAnswer {
+                    id: "q1".into(),
+                    selected: vec!["Yes".into()],
+                    custom: None,
+                }],
+            })
+        }
+    })
+    .connect(client_side)
+    .await
+    .expect("connect ask client");
+
+    // 预热并确认首轮开始前 tavily 已就绪（1 tool）。
+    wait_connected(admin_client.clone(), 1).await;
+
+    let session = client
+        .call::<SessionNew>(SessionNewParams {
+            cwd: None,
+            model: None,
+            title: None,
+            engine: SessionEngine::Standard,
+            plan_active: false,
+            fast_mode: false,
+        })
+        .await
+        .expect("new session");
+
+    let send = |text: &str| {
+        let client = client.clone();
+        let session_id = session.id.clone();
+        let text = text.to_owned();
+        async move {
+            client
+                .call::<SessionPrompt>(PromptParams {
+                    session_id,
+                    input: vec![InputPart::Text { text }],
+                    mode: None,
+                    agent_message: None,
+                    goal_round: None,
+                    max_turns: None,
+                })
+                .await
+                .expect("prompt")
+        }
+    };
+
+    // 1. 首轮：tavily 已正常连接（1 tool）→ 系统提示含 tavily，但 runtime reminder 静默不注入。
+    send("turn 1").await;
+
+    // 2. 重连但工具集未变（仍为 [search]）→ 不应重复注入。
+    admin_client
+        .call::<McpReconnect>(McpReconnectParams {
+            server: Some("tavily".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("reconnect steady");
+    wait_connected(admin_client.clone(), 1).await;
+    send("turn 2").await;
+
+    // 3. 会话空闲期间工具增加为 2 个（[search, extract]）→ 下一次消息前自动注入一次。
+    mcp_phase.store(1, Ordering::SeqCst);
+    admin_client
+        .call::<McpReconnect>(McpReconnectParams {
+            server: Some("tavily".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("reconnect phase 1");
+    wait_connected(admin_client.clone(), 2).await;
+    send("turn 3").await;
+
+    // 4. 运行中（ask 工具执行期间）工具名变更（[search, map]）→ 同条提示第 2 轮当场注入一次。
+    send("turn 4").await;
+
+    // 5. 后续未再变更 → 不再重复注入。
+    send("turn 5").await;
+    assert_eq!(mcp_phase.load(Ordering::SeqCst), 2, "ask 回调必须已触发运行中重连");
+
+    conn.close();
+    admin_conn.close();
+
+    let requests = upstream.received_requests().await.expect("requests");
+    assert_eq!(requests.len(), 6, "5 条 prompt（其中第 4 条含 1 次工具调用）共 6 个请求");
+
+    let mcp_reminders_in = |req: &wiremock::Request| -> Vec<String> {
+        let body: serde_json::Value = serde_json::from_slice(&req.body).expect("json body");
+        body["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .filter(|m| m["role"] != "system")
+            .filter_map(|m| m["content"].as_str())
+            .filter(|text| {
+                text.contains("MCP servers updated")
+                    || text.contains("MCP server status")
+                    || text.contains("Connected (")
+            })
+            .map(str::to_owned)
+            .collect()
+    };
+
+    // 请求 0（首轮正常）：0 条 MCP 运行时注入。
+    let sys0 = serde_json::from_slice::<serde_json::Value>(&requests[0].body).unwrap()["messages"]
+        [0]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(sys0.contains("<mcp-servers>\ntavily"));
+    assert!(
+        mcp_reminders_in(&requests[0]).is_empty(),
+        "首轮正常连接不应注入 MCP 提醒：{:?}",
+        mcp_reminders_in(&requests[0])
+    );
+
+    // 请求 1（无变更重连后）：依然 0 条。
+    assert!(
+        mcp_reminders_in(&requests[1]).is_empty(),
+        "无变更重连后不应重复注入：{:?}",
+        mcp_reminders_in(&requests[1])
+    );
+
+    // 请求 2（空闲期间 1→2 tools）：历史里新增 1 条。
+    let r2 = mcp_reminders_in(&requests[2]);
+    assert_eq!(r2.len(), 1, "空闲期间变更应在下次消息前注入一次：{r2:?}");
+    assert!(r2[0].contains("tavily: connected (2 tools)"));
+
+    // 请求 3（turn 4 第 1 轮，尚未变更）：仍为 1 条。
+    assert_eq!(mcp_reminders_in(&requests[3]).len(), 1);
+
+    // 请求 4（turn 4 第 2 轮，ask 期间工具名变更）：当场新增至 2 条。
+    let r4 = mcp_reminders_in(&requests[4]);
+    assert_eq!(r4.len(), 2, "同次提示途中工具名变更应立即注入：{r4:?}");
+    assert!(r4[1].contains("MCP servers updated"));
+
+    // 请求 5（turn 5 未变更）：仍保持 2 条，不再重复。
+    assert_eq!(mcp_reminders_in(&requests[5]).len(), 2);
+
+    h.close().await;
+}

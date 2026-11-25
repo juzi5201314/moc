@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -13,7 +13,7 @@ use moc_protocol::SessionEngine;
 use parking_lot::RwLock;
 use serde_json::{Value, json};
 
-use super::{Tier, Tool, ToolError, ToolRegistry};
+use super::{Tier, Tool, ToolError, ToolOrigin, ToolRegistry};
 use crate::{config::ResolvedConfig, service::mode, service::mode::Mode};
 
 /// MCP 服务器文本的信任声明，随服务器列表一起放进系统提示。
@@ -38,19 +38,33 @@ pub(super) fn quote_mcp_text(text: &str) -> String {
     escaped
 }
 
+/// 供运行时状态提醒渲染的单 server 目录快照。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct McpServerSnapshot {
+    pub name: String,
+    pub status: ServerStatus,
+    /// 该 server 当前在目录中可见的工具限定名（已按名称升序排列）。
+    pub tools: Vec<String>,
+}
+
 struct CatalogState {
+    manager: Arc<McpManager>,
     tools: Vec<Arc<dyn Tool>>,
     servers: BTreeMap<String, ServerStatus>,
     instructions: BTreeMap<String, Arc<str>>,
     /// 提示开始时仍处于 `Connecting` / `Reconnecting` 的 server；
-    /// 它们在后台完成后由本目录单调吸收一次，已就绪的 server 仍在整条提示内保持固定。
+    /// 在单次工具批次内可由 [`ToolCatalog::absorb_pending`] 单调吸收。
     pending_servers: BTreeSet<String>,
 }
 
 pub struct ToolCatalog {
-    manager: Arc<McpManager>,
+    /// 当前绑定 `McpManager` 的原始地址；`state.manager` 持续持有旧 `Arc`，
+    /// 因此在持锁替换前新旧地址绝不复用（无 ABA），可用于无锁快路径比对。
+    manager_ptr: AtomicUsize,
     has_pending: AtomicBool,
     last_version: AtomicU64,
+    /// 目录内容每次实际变化递增，便于提示循环捕获 `sync` 与 `absorb_pending` 的全部更新。
+    revision: AtomicU64,
     state: RwLock<CatalogState>,
     /// 声明、PTC 发现与执行共享相同的角色和权限快照。
     pub(super) scope: super::ToolScope,
@@ -93,12 +107,15 @@ impl ToolCatalog {
             .map(|(name, _)| name.clone())
             .collect();
         let has_pending = !pending_servers.is_empty();
+        let manager_ptr = Arc::as_ptr(&manager) as usize;
         Ok(Self {
-            manager,
+            manager_ptr: AtomicUsize::new(manager_ptr),
             has_pending: AtomicBool::new(has_pending),
             // 初始设为哨兵值，避免 snapshot 与 new 之间发生的状态变更被跳过。
             last_version: AtomicU64::new(u64::MAX),
+            revision: AtomicU64::new(0),
             state: RwLock::new(CatalogState {
+                manager,
                 tools,
                 servers: snapshot.statuses.clone(),
                 instructions: snapshot.instructions.clone(),
@@ -108,18 +125,119 @@ impl ToolCatalog {
         })
     }
 
-    /// 吸收提示开始时尚在握手中的慢 MCP server；已就绪 server 保持冻结不变。
+    /// 目录内容修订号：每次实际同步到新的 MCP 状态、工具或说明时递增。
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
+    }
+
+    /// 与最新 [`McpManager`] 同步全部 MCP 状态、工具与说明（每轮模型请求前调用）。
+    ///
+    /// 无管理器切换且 `status_version` 未变化时仅做两次原子读取，零锁零分配。
+    /// 同一管理器下进入 `Reconnecting` 的 server 保留已有工具句柄，以便调用路径经
+    /// `wait_peer` 等待重连；`Failed`/`Disabled`/已移除 server 的工具立即下线。
+    pub fn sync(&self, manager: &Arc<McpManager>) -> bool {
+        let next_ptr = Arc::as_ptr(manager) as usize;
+        let version = manager.status_version();
+        if next_ptr == self.manager_ptr.load(Ordering::Acquire)
+            && version == self.last_version.load(Ordering::Acquire)
+        {
+            return false;
+        }
+        let snapshot = manager.snapshot_now();
+        let mut state = self.state.write();
+        let manager_changed = !Arc::ptr_eq(&state.manager, manager);
+
+        let mut next_tools: Vec<Arc<dyn Tool>> = state
+            .tools
+            .iter()
+            .filter(|tool| tool.origin() != ToolOrigin::Mcp)
+            .cloned()
+            .collect();
+        if !manager_changed {
+            // 同一管理器断线重连中保留旧工具句柄，避免调用瞬间退化为 unknown tool。
+            for tool in &state.tools {
+                if tool.origin() == ToolOrigin::Mcp
+                    && tool.mcp_server().is_some_and(|server| {
+                        matches!(
+                            snapshot.statuses.get(server),
+                            Some(ServerStatus::Reconnecting { .. })
+                        )
+                    })
+                {
+                    next_tools.push(Arc::clone(tool));
+                }
+            }
+        }
+        for info in &snapshot.tools {
+            if next_tools
+                .iter()
+                .any(|existing| existing.name() == info.qualified)
+            {
+                tracing::warn!(
+                    tool = %info.qualified,
+                    server = %info.server,
+                    "同步到的 MCP 工具与现有工具重名，已跳过"
+                );
+                continue;
+            }
+            next_tools.push(Arc::new(super::mcp::McpTool::new(
+                Arc::clone(manager),
+                Arc::clone(info),
+            )) as Arc<dyn Tool>);
+        }
+        next_tools.sort_unstable_by(|left, right| left.name().cmp(right.name()));
+
+        let tools_changed = state.tools.len() != next_tools.len()
+            || state.tools.iter().zip(&next_tools).any(|(old, new)| {
+                old.name() != new.name()
+                    || old.description() != new.description()
+                    || (old.origin() == ToolOrigin::Mcp && old.def().parameters != new.def().parameters)
+            });
+        let servers_changed = state.servers != snapshot.statuses;
+        let instructions_changed = state.instructions != snapshot.instructions;
+        let changed = manager_changed || tools_changed || servers_changed || instructions_changed;
+
+        if changed {
+            state.manager = Arc::clone(manager);
+            state.tools = next_tools;
+            state.servers = snapshot.statuses;
+            state.instructions = snapshot.instructions;
+            state.pending_servers = state
+                .servers
+                .iter()
+                .filter(|(_, status)| {
+                    matches!(
+                        status,
+                        ServerStatus::Connecting | ServerStatus::Reconnecting { .. }
+                    )
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            self.has_pending
+                .store(!state.pending_servers.is_empty(), Ordering::Release);
+            self.revision.fetch_add(1, Ordering::AcqRel);
+        }
+        self.manager_ptr.store(next_ptr, Ordering::Release);
+        self.last_version.store(version, Ordering::Release);
+        changed
+    }
+
+    /// 吸收提示开始时尚在握手中的慢 MCP server；单次工具批次内已就绪 server 保持不变。
     /// 无待就绪 server 或状态版本号未变化时仅做原子读取，不加锁不分配。
     pub fn absorb_pending(&self) -> bool {
         if !self.has_pending.load(Ordering::Acquire) {
             return false;
         }
-        let version = self.manager.status_version();
+        let manager = Arc::clone(&self.state.read().manager);
+        let version = manager.status_version();
         if version == self.last_version.load(Ordering::Acquire) {
             return false;
         }
-        let snapshot = self.manager.snapshot_now();
+        let snapshot = manager.snapshot_now();
         let mut state = self.state.write();
+        if !Arc::ptr_eq(&state.manager, &manager) {
+            return false;
+        }
         let mut changed = false;
         let mut tools_added = false;
         let pending: Vec<String> = state.pending_servers.iter().cloned().collect();
@@ -151,7 +269,7 @@ impl ToolCatalog {
                         continue;
                     }
                     state.tools.push(Arc::new(super::mcp::McpTool::new(
-                        Arc::clone(&self.manager),
+                        Arc::clone(&manager),
                         Arc::clone(info),
                     )) as Arc<dyn Tool>);
                     tools_added = true;
@@ -175,8 +293,34 @@ impl ToolCatalog {
         if state.pending_servers.is_empty() {
             self.has_pending.store(false, Ordering::Release);
         }
+        if changed {
+            self.revision.fetch_add(1, Ordering::AcqRel);
+        }
         self.last_version.store(version, Ordering::Release);
         changed
+    }
+
+    /// 供运行时状态提醒读取的活跃 MCP server 视图（跳过 `Disabled`，按名称排序）。
+    pub(crate) fn mcp_state_snapshot(&self) -> Vec<McpServerSnapshot> {
+        let state = self.state.read();
+        state
+            .servers
+            .iter()
+            .filter(|(_, status)| !matches!(status, ServerStatus::Disabled))
+            .map(|(name, status)| {
+                let tools = state
+                    .tools
+                    .iter()
+                    .filter(|tool| tool.mcp_server() == Some(name.as_str()))
+                    .map(|tool| tool.name().to_owned())
+                    .collect();
+                McpServerSnapshot {
+                    name: name.clone(),
+                    status: status.clone(),
+                    tools,
+                }
+            })
+            .collect()
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
@@ -711,5 +855,57 @@ mod tests {
             assert_eq!(broken["status"], "failed");
             assert_eq!(broken["error"], "connect timeout &lt;15s&gt;");
         }
+    }
+
+    #[test]
+    fn sync_tracks_manager_swap_and_mcp_state_snapshot() {
+        let root = tempfile::tempdir().expect("临时目录");
+        let config = ResolvedConfig::load(&crate::CoreConfig {
+            home: root.path().join("home"),
+            cwd: root.path().to_owned(),
+            ..Default::default()
+        })
+        .expect("默认配置");
+        let initial_snapshot = McpSnapshot {
+            tools: vec![Arc::new(moc_mcp::McpToolInfo {
+                server: "tavily".into(),
+                name: "search".into(),
+                qualified: "mcp__tavily__search".into(),
+                title: None,
+                description: Some("Web search".into()),
+                input_schema: json!({"type": "object"}),
+                output_schema: None,
+                read_only: false,
+            })],
+            statuses: BTreeMap::from([(
+                "tavily".into(),
+                ServerStatus::Connected { tool_count: 1 },
+            )]),
+            instructions: BTreeMap::new(),
+        };
+        let manager_a = McpManager::new(Vec::new(), tokio_util::sync::CancellationToken::new());
+        let catalog = ToolCatalog::new(
+            &ToolRegistry::new(),
+            &initial_snapshot,
+            Arc::clone(&manager_a),
+            Vec::new(),
+            super::super::ToolScope::top(),
+        )
+        .expect("目录构建");
+        assert_eq!(catalog.revision(), 0);
+        let first_state = catalog.mcp_state_snapshot();
+        assert_eq!(first_state.len(), 1);
+        assert_eq!(first_state[0].tools, vec!["mcp__tavily__search"]);
+
+        // 切换到新空管理器（模拟配置中移除了全部 MCP server）：同步后工具下线、修订号递增。
+        let manager_b = McpManager::new(Vec::new(), tokio_util::sync::CancellationToken::new());
+        assert!(catalog.sync(&manager_b));
+        assert_eq!(catalog.revision(), 1);
+        assert!(catalog.mcp_state_snapshot().is_empty());
+        assert!(catalog.get("mcp__tavily__search").is_none());
+        // 同管理器版本号未变：快路径直接返回 false。
+        assert!(!catalog.sync(&manager_b));
+        assert_eq!(catalog.revision(), 1);
+        let _ = config;
     }
 }
