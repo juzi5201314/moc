@@ -259,7 +259,7 @@
   --text-ui: 13px;
   --text-ui--line-height: 20px;
   --text-chat: 14px;
-  --text-chat--line-height: 1.6;
+  --text-chat--line-height: 1.5;
   --text-title: 15px;
   --text-title--line-height: 1.4;
   --text-heading: 17px;
@@ -418,22 +418,65 @@
   --xy-background-pattern-dots-color: var(--border-strong);
 }
 
+/* ---------------- 纯文本消息换行间距 ----------------
+   自动折行（软换行）用较紧凑的行高使其自然抱团；显式换行（\n）拆为独立行块，
+   行间追加间距，空行收敛到约一行总留白，避免上下双倍撑开。 */
+.moc-text-lines {
+  line-height: var(--moc-text-leading, 1.5);
+}
+
+.moc-text-line {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.moc-text-line + .moc-text-line {
+  margin-top: var(--moc-hard-break-gap, 0.4em);
+}
+
+.moc-text-line-empty {
+  height: var(--moc-hard-break-gap, 0.4em);
+  line-height: 0;
+}
+
 /* ---------------- Markdown 排版 ----------------
    产品化排版（对齐主流 agent UI）：标题无下边框、表格只留水平分隔线、
-   无边框代码块 + 大圆角、行内代码灰底 + 发丝内描边，按 data-streamdown 标记统一收敛。 */
+   无边框代码块 + 大圆角、行内代码灰底 + 发丝内描边，按 data-streamdown 标记统一收敛。
+   垂直节奏分三档：段内自动折行紧凑（1.5），硬换行/列表项间松一档（+0.4em），段落间再松一档（+0.8em）。 */
 .moc-prose {
   font-size: var(--moc-prose-size, 14px);
-  line-height: var(--moc-prose-leading, 1.65);
+  line-height: var(--moc-prose-leading, 1.5);
   color: var(--moc-prose-color, var(--foreground));
   overflow-wrap: anywhere;
 }
 
 .moc-prose > * + * {
-  margin-top: 0.7em;
+  margin-top: 0.8em;
 }
 
 .moc-prose p {
   margin: 0;
+}
+
+.moc-prose :is(blockquote, li) > p + p {
+  margin-top: 0.7em;
+}
+
+/* Markdown 硬换行（<br>）：零宽行内块置于 <br> 前向下撑开当前视觉行底部，
+   既不拆断行内元素、不影响拖选复制，也避免 <br> 后的源码换行节点产生行首空格。 */
+.moc-prose .moc-br-strut {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  vertical-align: calc(-0.5lh + 0.37em - var(--moc-hard-break-gap, 0.4em));
+  pointer-events: none;
+  user-select: none;
+}
+
+@supports not (height: 1lh) {
+  .moc-prose .moc-br-strut {
+    vertical-align: calc(-0.38em - var(--moc-hard-break-gap, 0.4em));
+  }
 }
 
 .moc-prose [data-streamdown="heading-1"],
@@ -482,15 +525,22 @@
   list-style-type: decimal;
 }
 .moc-prose [data-streamdown="list-item"] {
-  margin: 0.1em 0;
+  margin: 0;
+  padding-block: 0;
   padding-left: 0.15em;
+}
+.moc-prose [data-streamdown="list-item"] + li {
+  margin-top: var(--moc-hard-break-gap, 0.4em);
+}
+.moc-prose [data-streamdown="list-item"] > p {
+  display: block;
 }
 .moc-prose [data-streamdown="list-item"]::marker {
   color: var(--text-tertiary);
 }
 .moc-prose [data-streamdown="list-item"] > [data-streamdown="unordered-list"],
 .moc-prose [data-streamdown="list-item"] > [data-streamdown="ordered-list"] {
-  margin: 0.15em 0;
+  margin: var(--moc-hard-break-gap, 0.4em) 0 0;
   padding-left: 1.3em;
 }
 /* 任务列表：去掉圆点，复选框与文字对齐 */
@@ -577,7 +627,7 @@
   border: 0;
   border-bottom: 1px solid var(--border-subtle);
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 1.45;
   vertical-align: top;
 }
 /* 表头做成弱化的列标签：中等字重、次级色，比行线稍深的一条线与数据区分开 */
@@ -706,9 +756,14 @@
 }
 
 /* 固定工具预览只容纳三行正文：去掉段落与列表的额外垂直留白，避免裁断半行。 */
-.moc-tool-preview .moc-prose :is(p, ul, ol, li, h1, h2, h3, h4, h5, h6) {
+.moc-tool-preview
+  .moc-prose
+  :is(p, ul, ol, li, [data-streamdown="list-item"], h1, h2, h3, h4, h5, h6) {
   margin-block: 0;
   padding-block: 0;
   font-size: inherit;
   line-height: inherit;
+}
+.moc-tool-preview .moc-prose .moc-br-strut {
+  display: none;
 }

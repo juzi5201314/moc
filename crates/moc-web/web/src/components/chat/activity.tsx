@@ -7,6 +7,7 @@ import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import { toast } from "sonner";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { NoticeScope, toolBody } from "@/components/chat/tool-views";
+import { PlainLines } from "@/components/common/plain-lines";
 import { DiffStat, diffStats } from "@/components/panels/diff-file";
 import { Button } from "@/components/ui/button";
 import { parseLinkTarget } from "@/lib/file-target";
@@ -238,7 +239,7 @@ function ThinkingTail({ text }: { text: string }) {
         "overflow-hidden",
         clipped && "[mask-image:linear-gradient(to_bottom,transparent,black_1.75rem)]",
       )}
-      style={{ maxHeight: `calc(${BRIEF_THINKING_ROWS} * 1.65 * 13.5px)` }}
+      style={{ maxHeight: `calc(${BRIEF_THINKING_ROWS} * 1.5 * 13.5px)` }}
     >
       <ThinkingProse text={text} animating />
     </div>
@@ -247,7 +248,7 @@ function ThinkingTail({ text }: { text: string }) {
 
 function ThinkingProse({ text, animating }: { text: string; animating?: boolean }) {
   return (
-    <div className="[--moc-prose-color:var(--muted-foreground)] [--moc-prose-leading:1.65] [--moc-prose-size:13.5px]">
+    <div className="[--moc-prose-color:var(--muted-foreground)] [--moc-prose-leading:1.5] [--moc-prose-size:13.5px]">
       <MessageResponse isAnimating={animating}>{text}</MessageResponse>
     </div>
   );
@@ -788,8 +789,8 @@ function JobNoticeRow({
       />
       {level !== "hidden" && (
         <Body>
-          <div className="rounded-lg bg-code px-3.5 py-2.5 text-sm whitespace-pre-wrap text-muted-foreground">
-            {lines}
+          <div className="rounded-lg bg-code px-3.5 py-2.5 text-sm text-muted-foreground">
+            <PlainLines text={lines} />
             {level === "brief" && head.hidden > 0 && (
               <button
                 type="button"
@@ -856,10 +857,14 @@ function AgentReportRow({
           <div
             className={cn(
               "rounded-lg bg-code px-3.5 py-2.5 text-sm",
-              result ? "text-foreground" : "whitespace-pre-wrap text-muted-foreground",
+              result ? "text-foreground" : "text-muted-foreground",
             )}
           >
-            {result ? <MessageResponse mode="static">{lines}</MessageResponse> : lines}
+            {result ? (
+              <MessageResponse mode="static">{lines}</MessageResponse>
+            ) : (
+              <PlainLines text={lines} />
+            )}
             {level === "brief" && head.hidden > 0 && (
               <button
                 type="button"
@@ -901,8 +906,8 @@ function GoalRoundRow({
       />
       {level !== "hidden" && (
         <Body>
-          <div className="rounded-lg bg-code px-3.5 py-2.5 text-sm whitespace-pre-wrap text-muted-foreground">
-            {lines}
+          <div className="rounded-lg bg-code px-3.5 py-2.5 text-sm text-muted-foreground">
+            <PlainLines text={lines} />
             {level === "brief" && head.hidden > 0 && (
               <button
                 type="button"

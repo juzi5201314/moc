@@ -15,6 +15,7 @@ import {
   type StreamdownTranslations,
 } from "streamdown";
 
+import { MarkdownBreak } from "@/components/common/plain-lines";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup, ButtonGroupText } from "@/components/ui/button-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -455,7 +456,7 @@ const MarkdownAnchor: NonNullable<Components["a"]> = ({
   );
 };
 
-const messageComponents: Components = { a: MarkdownAnchor };
+const messageComponents: Components = { a: MarkdownAnchor, br: MarkdownBreak };
 
 export const MessageResponse = memo(
   ({

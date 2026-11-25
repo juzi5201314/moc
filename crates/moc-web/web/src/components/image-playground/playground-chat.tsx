@@ -9,6 +9,7 @@ import {
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import { PlainLines } from "@/components/common/plain-lines";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/lib/i18n";
@@ -157,7 +158,7 @@ function TurnItem({ sessionId, turn }: { sessionId: string; turn: PlaygroundTurn
           </div>
         )}
         <div className="rounded-[18px] bg-bubble px-4 py-2.5 text-chat text-foreground">
-          <p className="whitespace-pre-wrap break-words">{turn.prompt}</p>
+          <PlainLines text={turn.prompt} />
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5 text-2xs text-text-tertiary">
           <button

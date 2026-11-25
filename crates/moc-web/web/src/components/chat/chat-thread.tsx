@@ -505,21 +505,17 @@ function UserMessage({
       )}
       {block.text && (
         <div className="relative max-w-[92%] rounded-2xl bg-bubble px-3.5 py-2 text-chat text-foreground sm:max-w-[80%]">
-          <div
+          <RefText
             className={cn(
-              "whitespace-pre-wrap break-words",
               long &&
                 !expanded &&
                 "max-h-[280px] overflow-hidden [mask-image:linear-gradient(to_bottom,black_75%,transparent)]",
             )}
-          >
-            <RefText
-              sessionId={context.sessionId}
-              text={block.text}
-              images={block.images}
-              attachments={block.attachments ?? []}
-            />
-          </div>
+            sessionId={context.sessionId}
+            text={block.text}
+            images={block.images}
+            attachments={block.attachments ?? []}
+          />
           {long && (
             <button
               type="button"

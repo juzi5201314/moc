@@ -10,6 +10,7 @@ import { createContext, type ReactNode, useContext, useMemo } from "react";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { MarkdownBreak } from "@/components/common/plain-lines";
 import { useT } from "@/lib/i18n";
 import { type PlanLineRange, rangeFromSelection } from "@/lib/plan-annotation";
 import { cn } from "@/lib/utils";
@@ -131,6 +132,7 @@ const components = {
   pre: Pre,
   code: Code,
   a: mark("a", "link"),
+  br: MarkdownBreak,
   strong: mark("strong", "strong"),
   hr: mark("hr", "horizontal-rule"),
   table: block("table", "table"),

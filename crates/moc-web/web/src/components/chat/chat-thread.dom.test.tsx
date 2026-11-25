@@ -555,3 +555,41 @@ it("正文把过程切成「工作了」段，完成后整体再折叠一层", a
   expect(trailing.getAllByRole("button", { name: /Worked/ })).toHaveLength(1);
   trailing.unmount();
 });
+
+it("用户多行消息按显式换行拆分为独立行块，保留空行与引用控件并收敛末尾单换行", async () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const view = createView(info);
+  view.blocks = [
+    {
+      kind: "user",
+      id: "multi",
+      text: "第一行 #1\n第二行\n\n空行后第三行\n",
+      images: [{ Base64: { media_type: "image/png", data: "AA==" } }],
+      atMs: 0,
+    },
+  ];
+  useTranscript.setState({ bySession: { [info.id]: view } });
+  const thread = render(
+    <TooltipProvider>
+      <ChatThread sessionId={info.id} />
+    </TooltipProvider>,
+  );
+  await act(async () => {});
+
+  const rows = [...thread.container.querySelectorAll(".moc-text-line")];
+  expect(rows).toHaveLength(4);
+  expect(rows[0].textContent).toContain("第一行");
+  expect(rows[0].textContent).toContain("#1");
+  expect(rows[1].textContent).toBe("第二行");
+  expect(rows[2].classList.contains("moc-text-line-empty")).toBe(true);
+  expect(rows[2].querySelector("br")).not.toBeNull();
+  expect(rows[3].textContent).toBe("空行后第三行");
+  thread.unmount();
+});

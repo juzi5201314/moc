@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { IconButton } from "@/components/common/icon-button";
+import { PlainLines } from "@/components/common/plain-lines";
 import { Button } from "@/components/ui/button";
 import { formatDuration, relativeTime } from "@/lib/format";
 import { type MsgKey, useT } from "@/lib/i18n";
@@ -449,8 +450,8 @@ export function BtwTab({ sessionId }: { sessionId: string }) {
         )}
         {turns.map((turn) => (
           <div key={turn.requestId} className="space-y-2">
-            <div className="ml-auto w-fit max-w-[90%] rounded-2xl rounded-br-md bg-bubble px-3 py-1.5 text-ui whitespace-pre-wrap">
-              {turn.question}
+            <div className="ml-auto w-fit max-w-[90%] rounded-2xl rounded-br-md bg-bubble px-3 py-1.5 text-ui">
+              <PlainLines text={turn.question} />
             </div>
             {turn.answer ? (
               <MessageResponse

@@ -3,6 +3,7 @@
 
 import { memo } from "react";
 import { imageSrc } from "@/components/chat/activity";
+import { LineBlocks, splitInlineNodesByLine } from "@/components/common/plain-lines";
 import { useRefInfo } from "@/lib/ref-inspect";
 import { scanRefs } from "@/lib/refs";
 import type { UserAttachment } from "@/lib/transcript-model";
@@ -14,11 +15,13 @@ export const RefText = memo(function RefText({
   text,
   images,
   attachments,
+  className,
 }: {
   sessionId: string;
   text: string;
   images: ImageSource[];
   attachments: UserAttachment[];
+  className?: string;
 }) {
   const files = attachments.flatMap((attachment) =>
     attachment.ref ? [{ name: attachment.ref.slice(1), path: attachment.path }] : [],
@@ -50,5 +53,5 @@ export const RefText = memo(function RefText({
     cursor = span.to;
   }
   out.push(text.slice(cursor));
-  return <>{out}</>;
+  return <LineBlocks lines={splitInlineNodesByLine(out)} className={className} />;
 });

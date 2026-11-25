@@ -278,4 +278,19 @@ describe("MessageResponse GitHub 风格渲染", () => {
       expect(sandbox).not.toContain("allow-same-origin");
     });
   });
+
+  it("硬换行渲染为 br 加零宽撑高占位且不改变纯文本内容", async () => {
+    const { container } = render(<MessageResponse>{"第一行  \n第二行\\\n第三行"}</MessageResponse>);
+    await waitFor(() => {
+      expect(container.querySelectorAll("br")).toHaveLength(2);
+    });
+    const struts = container.querySelectorAll(".moc-br-strut");
+    expect(struts).toHaveLength(2);
+    for (const strut of struts) {
+      expect(strut.getAttribute("aria-hidden")).toBe("true");
+      expect(strut.textContent).toBe("");
+      expect(strut.nextElementSibling?.tagName).toBe("BR");
+    }
+    expect(container.textContent).toBe("第一行\n第二行\n第三行");
+  });
 });
