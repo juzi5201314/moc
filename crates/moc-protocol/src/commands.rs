@@ -13,6 +13,8 @@
 
 use crate::features::FeatureFlag;
 use crate::methods::{PluginCommandInfo, PluginInfo};
+use schemars::JsonSchema;
+use std::borrow::Cow;
 
 /// 命令来源（Gemini 七类来源的子集；新增注册方时扩展成员）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,22 +87,26 @@ pub enum DynamicArg {
     SandboxMode,
 }
 
-/// 参数填写形态：驱动前端的二级菜单、参数补全与输入引导。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+/// 参数填写形态：驱动前端的二级菜单、参数补全、命令胶囊收拢与输入引导。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ParamKind {
-    /// 自由文本（问题、提示、目标原文、执行指令等）。
+    /// 自由文本（自然语言：问题、提示、目标原文、执行指令等，留在胶囊外）。
     Text,
-    /// 文件或目录路径。
+    /// 文件或目录路径（非自然语言，纳入命令胶囊）。
     Path,
-    /// 固定子命令或枚举候选（见 `choices`）。
+    /// 固定子命令或枚举候选（见 `choices`，非自然语言，纳入命令胶囊）。
     Choice,
-    /// 运行时动态候选（见 `dynamic`），可同时附加静态 `choices`（如 `permission` 的 `clear`）。
+    /// 运行时动态候选（见 `dynamic`），可同时附加静态 `choices`（如 `permission` 的 `clear`，纳入命令胶囊）。
     Dynamic,
+    /// 数值参数（如次数、秒数、上限，非自然语言，纳入命令胶囊）。
+    Number,
+    /// 单个结构化 token 参数（非自然语言，如标识、标签、间隔字面量，纳入命令胶囊）。
+    Token,
 }
 
 /// 运行时动态参数来源：前端从已有状态实时供给候选与状态标记。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DynamicSource {
     /// 沙盒权限模式（`full` / `workspace` / `workspace_only`）。
@@ -141,42 +147,42 @@ pub struct CommandParamSpec {
     pub dynamic: Option<DynamicSource>,
 }
 
-/// 可序列化的静态枚举 / 子命令候选元数据。
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+/// 可序列化的静态枚举 / 子命令候选元数据（内置命令零拷贝借用，插件命令持有所有权）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ParamChoiceMeta {
-    pub value: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<std::borrow::Cow<'static, str>>,
-    pub description: std::borrow::Cow<'static, str>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub value: Cow<'static, str>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<Cow<'static, str>>,
+    pub description: Cow<'static, str>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<CommandParamMeta>,
 }
 
-/// 可序列化的结构化参数元数据。
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+/// 可序列化的结构化参数元数据（内置 `/commands.json` 与插件 `plugin/list` 共用）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CommandParamMeta {
-    pub name: &'static str,
+    pub name: Cow<'static, str>,
     pub kind: ParamKind,
     pub required: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub accepts_text: bool,
-    pub description: std::borrow::Cow<'static, str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub placeholder: Option<std::borrow::Cow<'static, str>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_behavior: Option<std::borrow::Cow<'static, str>>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub description: Cow<'static, str>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<Cow<'static, str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_behavior: Option<Cow<'static, str>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub choices: Vec<ParamChoiceMeta>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dynamic: Option<DynamicSource>,
 }
 
 impl ParamChoiceSpec {
     pub fn meta(&self) -> ParamChoiceMeta {
         ParamChoiceMeta {
-            value: self.value,
+            value: Cow::Borrowed(self.value),
             label: optional_text(self.label),
             description: description_text(self.description),
             params: self.params.iter().map(CommandParamSpec::meta).collect(),
@@ -187,7 +193,7 @@ impl ParamChoiceSpec {
 impl CommandParamSpec {
     pub fn meta(&self) -> CommandParamMeta {
         CommandParamMeta {
-            name: self.name,
+            name: Cow::Borrowed(self.name),
             kind: self.kind,
             required: self.required,
             accepts_text: self.accepts_text,
@@ -307,6 +313,7 @@ pub struct PluginCommand {
     pub name: String,
     pub description: String,
     pub usage: String,
+    pub params: Vec<CommandParamMeta>,
     pub plugin: String,
     pub origin: String,
 }
@@ -378,6 +385,7 @@ impl<I: 'static> CommandRegistry<I> {
                     name: command.name.clone(),
                     description: command.description.clone(),
                     usage: command.usage.clone(),
+                    params: command.params.clone(),
                     plugin: plugin.name.clone(),
                     origin: plugin.source.clone(),
                 })
@@ -487,6 +495,7 @@ impl From<(&PluginInfo, &PluginCommandInfo)> for PluginCommand {
             name: command.name.clone(),
             description: command.description.clone(),
             usage: command.usage.clone(),
+            params: command.params.clone(),
             plugin: plugin.name.clone(),
             origin: plugin.source.clone(),
         }
@@ -563,6 +572,7 @@ mod tests {
                     name: (*name).into(),
                     description: String::new(),
                     usage: String::new(),
+                    params: Vec::new(),
                 })
                 .collect(),
             error: None,

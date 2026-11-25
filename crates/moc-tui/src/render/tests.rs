@@ -65,6 +65,7 @@ fn prompt_only_highlights_registered_command_tokens() {
             name: "deploy".into(),
             description: String::new(),
             usage: String::new(),
+            params: Vec::new(),
             plugin: "demo".into(),
             origin: String::new(),
         }]);

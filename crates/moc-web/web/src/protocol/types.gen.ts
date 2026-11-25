@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 451912cc60438970
+// schema sha256: 7edbf53555d252c4
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -206,6 +206,20 @@ export type BtwUpdate =
       text: string;
       type: "reasoning_delta";
     };
+/**
+ * 运行时动态参数来源：前端从已有状态实时供给候选与状态标记。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "DynamicSource".
+ */
+export type DynamicSource = "sandbox_mode" | "mcp_server";
+/**
+ * 参数填写形态：驱动前端的二级菜单、参数补全、命令胶囊收拢与输入引导。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ParamKind".
+ */
+export type ParamKind = "text" | "path" | "choice" | "dynamic" | "number" | "token";
 /**
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
  * via the `definition` "ConfigAction".
@@ -2047,6 +2061,35 @@ export interface ClientInfo {
   version: string;
 }
 /**
+ * 可序列化的结构化参数元数据（内置 `/commands.json` 与插件 `plugin/list` 共用）。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "CommandParamMeta".
+ */
+export interface CommandParamMeta {
+  acceptsText?: boolean;
+  choices?: ParamChoiceMeta[];
+  defaultBehavior?: string | null;
+  description: string;
+  dynamic?: DynamicSource | null;
+  kind: ParamKind;
+  name: string;
+  placeholder?: string | null;
+  required: boolean;
+}
+/**
+ * 可序列化的静态枚举 / 子命令候选元数据（内置命令零拷贝借用，插件命令持有所有权）。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ParamChoiceMeta".
+ */
+export interface ParamChoiceMeta {
+  description: string;
+  label?: string | null;
+  params?: CommandParamMeta[];
+  value: string;
+}
+/**
  * 一次上下文压缩的结果。
  *
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
@@ -3377,6 +3420,10 @@ export interface PlanPageParams {
 export interface PluginCommandInfo {
   description: string;
   name: string;
+  /**
+   * 可选结构化参数声明；与内置命令共用 [`CommandParamMeta`]，省略时前端按 `usage` 降级处理。
+   */
+  params?: CommandParamMeta[];
   usage?: string;
 }
 /**

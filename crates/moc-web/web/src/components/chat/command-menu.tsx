@@ -23,7 +23,7 @@ import type { CommandParamMeta } from "@/protocol/types";
 import { Highlighted, useSuggestionLayout } from "./composer-parts";
 
 /** 状态小圆点（仅用于实时状态类动态候选，如 MCP server）。 */
-function StatusDot({ tone }: { tone: ChoiceStatusTone }) {
+export function StatusDot({ tone }: { tone: ChoiceStatusTone }) {
   return (
     <span
       aria-hidden="true"
@@ -39,7 +39,13 @@ function StatusDot({ tone }: { tone: ChoiceStatusTone }) {
 }
 
 /** 必填 / 可选参数状态徽标：必填用 brand 淡底（缺省报错时切 destructive 淡底），可选用低对比中性灰底。 */
-function RequirementBadge({ required, error = false }: { required: boolean; error?: boolean }) {
+export function RequirementBadge({
+  required,
+  error = false,
+}: {
+  required: boolean;
+  error?: boolean;
+}) {
   const t = useT();
   if (required) {
     return (
@@ -58,7 +64,7 @@ function RequirementBadge({ required, error = false }: { required: boolean; erro
   );
 }
 
-/** 参数结构化说明块：用于自由文本/路径参数命令的二级说明卡。 */
+/** 参数结构化说明块：用于非菜单形态参数命令的二级说明卡。 */
 function ParamSpecCard({ param }: { param: CommandParamMeta }) {
   const t = useT();
   return (
@@ -67,10 +73,13 @@ function ParamSpecCard({ param }: { param: CommandParamMeta }) {
         <span className="font-mono text-xs font-medium text-foreground">{param.name}</span>
         <RequirementBadge required={param.required} />
       </div>
-      <p className="text-xs leading-relaxed text-muted-foreground">{param.description}</p>
-      {param.kind === "path" && param.placeholder && (
-        <p className="font-mono text-2xs text-text-tertiary">{param.placeholder}</p>
+      {param.description && (
+        <p className="text-xs leading-relaxed text-muted-foreground">{param.description}</p>
       )}
+      {(param.kind === "path" || param.kind === "number" || param.kind === "token") &&
+        param.placeholder && (
+          <p className="font-mono text-2xs text-text-tertiary">{param.placeholder}</p>
+        )}
       {param.defaultBehavior && (
         <p className="text-2xs leading-relaxed text-text-tertiary">
           <span className="font-medium text-muted-foreground">{t("cmd.default")}: </span>

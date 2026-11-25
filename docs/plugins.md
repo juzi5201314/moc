@@ -134,6 +134,25 @@ export default {
 
 命令名规则与插件名一致，注册后自动进入前端补全表（与内置命令同名时内置优先）。`run(args, ctx)` 的 `args` 是命令后的原始字符串；返回值按与工具相同的规则显示在对话区。参数错误请直接返回提示文本，不要 `throw`。
 
+命令除简单的 `usage` 字符串外，还支持声明结构化 `params`（与内置命令共用前端的二级交互菜单、阶段二参数补全与可编辑命令胶囊）：
+
+- `kind` 支持 `"text"`（自然语言正文，留在胶囊外）与非自然语言参数 `"choice"` / `"path"` / `"number"` / `"token"`（自动收拢进命令胶囊，点击胶囊可弹出面板编辑）；
+- `choice` 需提供非空去重 `choices`（每项可递归附带子 `params`，最多 4 层），并可通过 `acceptsText: true` 同时允许直接输入自由文本；
+- 可选填写 `required`、`description`、`placeholder`、`defaultBehavior`。
+
+```js
+commands: {
+  loop: {
+    description: "重复执行指令",
+    params: [
+      { name: "count", kind: "number", required: true, description: "重复次数", placeholder: "例如 3" },
+      { name: "command", kind: "text", required: true, description: "要执行的指令" },
+    ],
+    run(args, ctx) { /* ... */ },
+  },
+}
+```
+
 ### 3. 生命周期钩子（`hooks`）
 
 钩子按插件加载顺序依次执行，后一个插件能看到前一个的改写结果。模型直发与经 `execute` 发起的工具调用都会触发 `beforeToolCall` / `afterToolCall`（插件内部调用 `tools.call` 不重入钩子）。

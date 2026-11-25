@@ -167,11 +167,47 @@ export type ToolResult =
     }
   | unknown;
 
+/** 命令参数填写形态：`text` 为自然语言正文（留在命令胶囊外），其余均为非自然语言参数（纳入胶囊且可点开编辑）。 */
+export type CommandParamKind = "text" | "path" | "choice" | "number" | "token";
+
+/** `choice` 类型参数的静态子命令 / 枚举候选声明。 */
+export interface CommandParamChoiceDefinition {
+  /** 填入命令行的字面值（1–64 字节，非空且不含空白，如 `"pause"`、`"edit"`）。 */
+  value: string;
+  /** 展示名；省略时直接使用 `value`。 */
+  label?: string;
+  /** 一句话用途说明；可省略。 */
+  description?: string;
+  /** 选中该子命令后的后续参数（支持最多 4 层嵌套）。 */
+  params?: CommandParamDefinition[];
+}
+
+/** 斜杠命令的结构化参数声明（与内置命令共用前端补全、二级菜单与命令胶囊编辑能力）。 */
+export interface CommandParamDefinition {
+  /** 参数标识（1–64 字节，非空且不含空白，如 `"count"`、`"mode"`、`"command"`）。 */
+  name: string;
+  kind: CommandParamKind;
+  /** 是否必填；默认 `false`。 */
+  required?: boolean;
+  /** 仅 `choice` 可设 `true`：除固定子命令外，还允许直接输入任意自然语言文本。 */
+  acceptsText?: boolean;
+  /** 参数用途说明；可省略。 */
+  description?: string;
+  /** 输入框行内占位提示或格式示例；可省略。 */
+  placeholder?: string;
+  /** 可选参数留空时的默认行为说明；可省略。 */
+  defaultBehavior?: string;
+  /** 仅 `choice` 必填：非空、不重复的子命令 / 枚举候选列表。 */
+  choices?: CommandParamChoiceDefinition[];
+}
+
 export interface CommandDefinition {
   /** 命令描述，前端补全表里显示。 */
   description: string;
   /** 用法提示，例如 `"[称呼]"`；可省略。 */
   usage?: string;
+  /** 可选结构化参数声明；提供后前端按内置命令同等能力呈现补全与可编辑命令胶囊。 */
+  params?: CommandParamDefinition[];
   /** `args` 是命令名之后的原始文本，未分词。 */
   run(args: string, ctx: Session): ToolResult | Promise<ToolResult>;
 }

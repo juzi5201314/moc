@@ -4,6 +4,9 @@ use super::invocation::js_error;
 use super::invocation::js_to_json;
 use crate::descriptor::AgentPresetDecl;
 use crate::descriptor::CommandDecl;
+use crate::descriptor::CommandParamChoiceDecl;
+use crate::descriptor::CommandParamDecl;
+use crate::descriptor::CommandParamKind;
 use crate::descriptor::ConfigDecl;
 use crate::descriptor::ConfigKind;
 use crate::descriptor::Descriptor;
@@ -141,8 +144,31 @@ pub(super) fn parse_descriptor<'js>(
                     t!("plugin.err.cmd_decl_object", name = name.as_str()).into_owned(),
                 )
             })?;
+            for key in declaration.keys::<String>() {
+                let key = key.map_err(|error| js_error(ctx, error))?;
+                if !["description", "usage", "params", "run"].contains(&key.as_str()) {
+                    return Err(PluginError::new(
+                        "E_PLUGIN_DESCRIPTOR",
+                        t!(
+                            "plugin.err.cmd_unknown_field",
+                            name = name.as_str(),
+                            key = key.as_str()
+                        )
+                        .into_owned(),
+                    ));
+                }
+            }
             let description = required_text(ctx, &declaration, "description", &name)?;
             let usage = optional_string(ctx, &declaration, "usage")?.unwrap_or_default();
+            let params_value: JsValue = declaration
+                .get("params")
+                .map_err(|error| js_error(ctx, error))?;
+            let params = if params_value.is_undefined() || params_value.is_null() {
+                Vec::new()
+            } else {
+                let json = js_to_json(ctx, params_value)?;
+                parse_command_params(&json, &name, 0)?
+            };
             let run: JsValue = declaration
                 .get("run")
                 .map_err(|error| js_error(ctx, error))?;
@@ -157,6 +183,7 @@ pub(super) fn parse_descriptor<'js>(
                 name,
                 description,
                 usage,
+                params,
             });
         }
     }
@@ -508,4 +535,203 @@ pub(super) fn agent_preset_declaration(definition: &str) -> Result<AgentPresetDe
         allow,
         deny,
     })
+}
+
+/// 命令参数嵌套上限（足够容纳多层子命令，同时防止插件构造深层递归）。
+const MAX_COMMAND_PARAM_DEPTH: usize = 4;
+
+fn valid_param_token(text: &str) -> bool {
+    (1..=64).contains(&text.len())
+        && !text
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+}
+
+fn json_optional_string(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>> {
+    match object.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => Ok((!text.is_empty()).then(|| text.clone())),
+        _ => Err(PluginError::new(
+            "E_PLUGIN_DESCRIPTOR",
+            t!("plugin.err.field_string", key = key).into_owned(),
+        )),
+    }
+}
+
+fn json_optional_bool(object: &serde_json::Map<String, Value>, key: &str) -> Result<bool> {
+    match object.get(key) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(flag)) => Ok(*flag),
+        _ => Err(PluginError::new(
+            "E_PLUGIN_DESCRIPTOR",
+            t!("plugin.err.field_bool", key = key).into_owned(),
+        )),
+    }
+}
+
+/// 递归解析并校验插件命令的结构化 `params` 声明。
+fn parse_command_params(
+    value: &Value,
+    command: &str,
+    depth: usize,
+) -> Result<Vec<CommandParamDecl>> {
+    let invalid =
+        |message: std::borrow::Cow<'static, str>| PluginError::new("E_PLUGIN_DESCRIPTOR", message);
+    if depth >= MAX_COMMAND_PARAM_DEPTH {
+        return Err(invalid(t!("plugin.err.cmd_params_depth", name = command)));
+    }
+    let items = value
+        .as_array()
+        .ok_or_else(|| invalid(t!("plugin.err.cmd_params_array", name = command)))?;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let object = item
+            .as_object()
+            .ok_or_else(|| invalid(t!("plugin.err.cmd_param_object", name = command)))?;
+        for key in object.keys() {
+            if ![
+                "name",
+                "kind",
+                "required",
+                "acceptsText",
+                "description",
+                "placeholder",
+                "defaultBehavior",
+                "choices",
+            ]
+            .contains(&key.as_str())
+            {
+                return Err(invalid(t!(
+                    "plugin.err.cmd_param_unknown_field",
+                    name = command,
+                    key = key.as_str()
+                )));
+            }
+        }
+        let name = object
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|text| valid_param_token(text))
+            .ok_or_else(|| invalid(t!("plugin.err.cmd_param_name", name = command)))?
+            .to_owned();
+        let kind = match object.get("kind").and_then(Value::as_str) {
+            Some("text") => CommandParamKind::Text,
+            Some("path") => CommandParamKind::Path,
+            Some("choice") => CommandParamKind::Choice,
+            Some("number") => CommandParamKind::Number,
+            Some("token") => CommandParamKind::Token,
+            _ => {
+                return Err(invalid(t!(
+                    "plugin.err.cmd_param_kind",
+                    name = command,
+                    param = name.as_str()
+                )));
+            }
+        };
+        let required = json_optional_bool(object, "required")?;
+        let accepts_text = json_optional_bool(object, "acceptsText")?;
+        if accepts_text && kind != CommandParamKind::Choice {
+            return Err(invalid(t!(
+                "plugin.err.cmd_param_accepts_text",
+                name = command,
+                param = name.as_str()
+            )));
+        }
+        let description = json_optional_string(object, "description")?.unwrap_or_default();
+        let placeholder = json_optional_string(object, "placeholder")?;
+        let default_behavior = json_optional_string(object, "defaultBehavior")?;
+
+        let mut choices = Vec::new();
+        if let Some(raw_choices) = object.get("choices").filter(|v| !v.is_null()) {
+            if kind != CommandParamKind::Choice {
+                return Err(invalid(t!(
+                    "plugin.err.cmd_param_choices_forbidden",
+                    name = command,
+                    param = name.as_str()
+                )));
+            }
+            let array = raw_choices.as_array().ok_or_else(|| {
+                invalid(t!(
+                    "plugin.err.cmd_param_choices_array",
+                    name = command,
+                    param = name.as_str()
+                ))
+            })?;
+            let mut seen = std::collections::BTreeSet::new();
+            for entry in array {
+                let choice_obj = entry.as_object().ok_or_else(|| {
+                    invalid(t!(
+                        "plugin.err.cmd_param_choice_object",
+                        name = command,
+                        param = name.as_str()
+                    ))
+                })?;
+                for key in choice_obj.keys() {
+                    if !["value", "label", "description", "params"].contains(&key.as_str()) {
+                        return Err(invalid(t!(
+                            "plugin.err.cmd_param_choice_unknown_field",
+                            name = command,
+                            param = name.as_str(),
+                            key = key.as_str()
+                        )));
+                    }
+                }
+                let choice_value = choice_obj
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .filter(|text| valid_param_token(text))
+                    .ok_or_else(|| {
+                        invalid(t!(
+                            "plugin.err.cmd_param_choice_value",
+                            name = command,
+                            param = name.as_str()
+                        ))
+                    })?
+                    .to_owned();
+                if !seen.insert(choice_value.to_ascii_lowercase()) {
+                    return Err(invalid(t!(
+                        "plugin.err.cmd_param_choice_dup",
+                        name = command,
+                        param = name.as_str(),
+                        value = choice_value.as_str()
+                    )));
+                }
+                let label = json_optional_string(choice_obj, "label")?;
+                let choice_desc =
+                    json_optional_string(choice_obj, "description")?.unwrap_or_default();
+                let sub_params = match choice_obj.get("params") {
+                    None | Some(Value::Null) => Vec::new(),
+                    Some(raw_sub) => parse_command_params(raw_sub, command, depth + 1)?,
+                };
+                choices.push(CommandParamChoiceDecl {
+                    value: choice_value,
+                    label,
+                    description: choice_desc,
+                    params: sub_params,
+                });
+            }
+        }
+        if kind == CommandParamKind::Choice && choices.is_empty() {
+            return Err(invalid(t!(
+                "plugin.err.cmd_param_choices_required",
+                name = command,
+                param = name.as_str()
+            )));
+        }
+
+        out.push(CommandParamDecl {
+            name,
+            kind,
+            required,
+            accepts_text,
+            description,
+            placeholder,
+            default_behavior,
+            choices,
+        });
+    }
+    Ok(out)
 }

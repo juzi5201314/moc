@@ -2,14 +2,18 @@ import { cleanup, fireEvent, render } from "@testing-library/react";
 import { useRef } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { Popover, PopoverAnchor } from "@/components/ui/popover";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   buildCommandEntries,
   type CommandContext,
+  parseCommandChip,
   resolveStage2,
   type SubmenuAction,
 } from "@/lib/command-params";
 import type { SlashCommand } from "@/lib/slash";
+import { CommandChipEditor } from "./command-chip-editor";
 import { CommandArgMenu, CommandMenu, CommandParamHint } from "./command-menu";
+import { RefChip } from "./ref-chip";
 
 afterEach(() => {
   cleanup();
@@ -217,4 +221,80 @@ it("阶段二参数浮层与自由文本必填报错提示渲染清晰", () => {
   const hint = view.getByRole("status");
   expect(hint.textContent).toContain("Required");
   expect(hint.textContent).toContain("请先填写必填参数 question");
+});
+
+it("命令胶囊同块渲染非自然语言参数，点开浮层可切换子命令并编辑数值参数", () => {
+  stubBrowserEnv(1280);
+  const loopCmd: SlashCommand = {
+    name: "loop",
+    description: "重复执行命令",
+    usage: "<count> <command>",
+    plugin: "demo",
+  };
+  const allCommands = [...SAMPLE_COMMANDS, loopCmd];
+  const onChipClick = vi.fn();
+  const anchor = document.createElement("div");
+
+  // 胶囊内分层展示命令名与非自然语言参数，且支持点击。
+  const chipView = render(
+    <TooltipProvider>
+      <RefChip
+        chip={{ kind: "command", label: "loop", args: ["3"], interactive: true }}
+        onClick={onChipClick}
+      />
+    </TooltipProvider>,
+  );
+  const chipButton = chipView.getByRole("button");
+  expect(chipButton.textContent).toBe("loop3");
+  expect(chipButton.querySelector('[data-slot="ref-chip-args"]')?.textContent).toBe("3");
+  fireEvent.click(chipButton);
+  expect(onChipClick).toHaveBeenCalledTimes(1);
+  chipView.unmount();
+
+  // 子命令编辑：`/goal pause` 切换为 `edit` 自动保留尾随空格待填目标。
+  const goalParsed = parseCommandChip("/goal pause", allCommands, CTX);
+  if (!goalParsed) throw new Error("expected /goal pause to parse");
+  const onGoalApply = vi.fn();
+  const goalView = render(
+    <CommandChipEditor
+      open
+      side="top"
+      parsed={goalParsed}
+      text="/goal pause"
+      ctx={CTX}
+      getAnchorElement={() => anchor}
+      onApply={onGoalApply}
+      onClose={vi.fn()}
+    />,
+  );
+  fireEvent.click(goalView.getByRole("menuitemradio", { name: /edit/ }));
+  expect(onGoalApply).toHaveBeenCalledWith("/goal edit ", 11, true, true);
+  goalView.unmount();
+
+  // 数值参数编辑：`/loop 3 echo pong` 改 `3` 为 `5` 并校验非法数字。
+  const loopParsed = parseCommandChip("/loop 3 echo pong", allCommands, CTX);
+  if (!loopParsed) throw new Error("expected /loop 3 echo pong to parse");
+  const onLoopApply = vi.fn();
+  const loopView = render(
+    <CommandChipEditor
+      open
+      side="top"
+      parsed={loopParsed}
+      text="/loop 3 echo pong"
+      ctx={CTX}
+      getAnchorElement={() => anchor}
+      onApply={onLoopApply}
+      onClose={vi.fn()}
+    />,
+  );
+  const countInput = loopView.getByLabelText("count") as HTMLInputElement;
+  expect(countInput.value).toBe("3");
+  fireEvent.change(countInput, { target: { value: "abc" } });
+  fireEvent.keyDown(countInput, { key: "Enter" });
+  expect(onLoopApply).not.toHaveBeenCalled();
+  expect(loopView.getByRole("dialog").textContent).toContain("请输入有效数字");
+
+  fireEvent.change(countInput, { target: { value: "5" } });
+  fireEvent.keyDown(countInput, { key: "Enter" });
+  expect(onLoopApply).toHaveBeenCalledWith("/loop 5 echo pong", 17, true, true);
 });

@@ -583,16 +583,9 @@ fn build_schema() -> (Value, BTreeMap<String, (String, &'static str)>) {
     );
 
     // 覆盖核对二：每个 serde pub 类型都能从方法根到达 $defs（即在线上）。
-    // 豁免的是「有 serde 形状但不走 RPC 方法面」的类型：CommandMeta 及其参数元数据走
+    // 豁免的是「有 serde 形状但不走 RPC 方法面」的类型：CommandMeta 走
     // moc-web 的 /commands.json HTTP 端点，RpcError 是 JSON-RPC 信封层。
-    const NOT_ON_WIRE: &[&str] = &[
-        "CommandMeta",
-        "CommandParamMeta",
-        "DynamicSource",
-        "ParamChoiceMeta",
-        "ParamKind",
-        "RpcError",
-    ];
+    const NOT_ON_WIRE: &[&str] = &["CommandMeta", "RpcError"];
     let defs = generator.definitions();
     let mut unreachable: Vec<String> = serde_type_names(&sources)
         .into_iter()

@@ -119,6 +119,82 @@ async fn evaluates_tools_commands() {
 }
 
 #[tokio::test]
+async fn parses_and_validates_structured_command_params() {
+    let temp = tempfile::tempdir().unwrap();
+    write_plugin(
+        temp.path(),
+        "index.js",
+        r#"
+        export default {
+          commands: {
+            loop: {
+              description: "重复执行指令",
+              params: [
+                { name: "count", kind: "number", required: true, description: "重复次数", placeholder: "3" },
+                { name: "command", kind: "text", required: true, description: "执行指令" }
+              ],
+              run(args) { return args; }
+            },
+            mode: {
+              description: "切换模式",
+              params: [
+                {
+                  name: "action",
+                  kind: "choice",
+                  acceptsText: true,
+                  defaultBehavior: "查看当前模式",
+                  choices: [
+                    {
+                      value: "set",
+                      description: "指定模式",
+                      params: [{ name: "target", kind: "token", required: true }]
+                    },
+                    { value: "reset", description: "重置" }
+                  ]
+                }
+              ],
+              run(args) { return args; }
+            }
+          }
+        };
+        "#,
+    );
+    let (_worker, descriptor) = load(temp.path(), Duration::from_secs(2)).await;
+    let loop_cmd = descriptor.command("loop").expect("有 loop 命令");
+    assert_eq!(loop_cmd.params.len(), 2);
+    assert_eq!(loop_cmd.params[0].kind, crate::CommandParamKind::Number);
+    assert!(loop_cmd.params[0].required);
+    assert_eq!(loop_cmd.params[1].kind, crate::CommandParamKind::Text);
+    let mode_cmd = descriptor.command("mode").expect("有 mode 命令");
+    assert!(mode_cmd.params[0].accepts_text);
+    assert_eq!(mode_cmd.params[0].choices.len(), 2);
+    assert_eq!(mode_cmd.params[0].choices[0].params.len(), 1);
+
+    // 非法参数声明在加载期直接报 E_PLUGIN_DESCRIPTOR。
+    for bad in [
+        r#"export default { commands: { x: { description: "x", extra: 1, run() {} } } };"#,
+        r#"export default { commands: { x: { description: "x", params: [{ name: "a", kind: "choice", choices: [] }], run() {} } } };"#,
+        r#"export default { commands: { x: { description: "x", params: [{ name: "a", kind: "number", acceptsText: true }], run() {} } } };"#,
+        r#"export default { commands: { x: { description: "x", params: [{ name: "a", kind: "choice", choices: [{ value: "dup" }, { value: "DUP" }] }], run() {} } } };"#,
+        r#"export default { commands: { x: { description: "x", params: [{ name: "a", kind: "path", choices: [{ value: "v" }] }], run() {} } } };"#,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        write_plugin(dir.path(), "index.js", bad);
+        let (_worker, ready) = spawn(
+            "demo".into(),
+            dir.path().to_path_buf(),
+            dir.path().join("index.js"),
+            limits(Duration::from_secs(2)),
+        );
+        let err = ready
+            .await
+            .expect("线程存活")
+            .expect_err("非法 params 必须被拒");
+        assert_eq!(err.code, "E_PLUGIN_DESCRIPTOR", "{bad} -> {err:?}");
+    }
+}
+
+#[tokio::test]
 async fn tool_modes_filter_the_declared_surface() {
     let temp = tempfile::tempdir().unwrap();
     write_plugin(

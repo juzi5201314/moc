@@ -6,8 +6,12 @@
 
 import type {
   BtwUpdate,
+  CommandParamMeta,
   ContextContentSection,
+  DynamicSource,
   FinishReason,
+  ParamChoiceMeta,
+  ParamKind,
   SessionUpdate,
   ToolDef,
 } from "./types.gen";
@@ -16,34 +20,11 @@ export * from "./types.gen";
 
 export const PROTOCOL_VERSION = "1.5";
 
-// ---------- /commands.json（HTTP 面，不走 RPC，不进 schema） ----------
+// ---------- /commands.json（HTTP 面，不走 RPC，不进 schema；参数类型复用 schema 生成物） ----------
 
-/** 命令参数的填写形态。 */
-export type CommandParamKind = "text" | "path" | "choice" | "dynamic";
-
-/** 运行时动态参数来源：前端从已有 store 供给候选与状态。 */
-export type CommandDynamicSource = "sandbox_mode" | "mcp_server";
-
-/** 静态子命令或枚举候选元数据。 */
-export type CommandParamChoiceMeta = {
-  value: string;
-  label?: string;
-  description: string;
-  params?: CommandParamMeta[];
-};
-
-/** 结构化命令参数元数据。 */
-export type CommandParamMeta = {
-  name: string;
-  kind: CommandParamKind;
-  required: boolean;
-  acceptsText?: boolean;
-  description: string;
-  placeholder?: string;
-  defaultBehavior?: string;
-  choices?: CommandParamChoiceMeta[];
-  dynamic?: CommandDynamicSource;
-};
+export type CommandParamKind = ParamKind;
+export type CommandDynamicSource = DynamicSource;
+export type CommandParamChoiceMeta = ParamChoiceMeta;
 
 /** `/commands.json` 返回的内置斜杠命令元数据（core 命令注册表的可序列化视图）。 */
 export type CommandMeta = {

@@ -145,6 +145,39 @@ pub struct ToolDecl {
     pub parallel: bool,
 }
 
+/// 插件斜杠命令参数填写形态：`Text` 为自然语言正文（留在命令胶囊外），
+/// 其余均为非自然语言结构化参数（纳入命令胶囊并支持点开编辑）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandParamKind {
+    Text,
+    Path,
+    Choice,
+    Number,
+    Token,
+}
+
+/// 插件斜杠命令 `choice` 参数的一个静态子命令 / 枚举候选。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandParamChoiceDecl {
+    pub value: String,
+    pub label: Option<String>,
+    pub description: String,
+    pub params: Vec<CommandParamDecl>,
+}
+
+/// 插件斜杠命令的一个结构化参数声明。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandParamDecl {
+    pub name: String,
+    pub kind: CommandParamKind,
+    pub required: bool,
+    pub accepts_text: bool,
+    pub description: String,
+    pub placeholder: Option<String>,
+    pub default_behavior: Option<String>,
+    pub choices: Vec<CommandParamChoiceDecl>,
+}
+
 /// 一个斜杠命令的静态声明。
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandDecl {
@@ -152,6 +185,8 @@ pub struct CommandDecl {
     pub description: String,
     /// 用法示例（前端提示用），可为空串。
     pub usage: String,
+    /// 可选结构化参数声明；提供后前端按内置命令同等能力渲染补全与命令胶囊。
+    pub params: Vec<CommandParamDecl>,
 }
 
 /// 支持的生命周期钩子。

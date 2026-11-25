@@ -3,10 +3,12 @@ use super::plugin_events;
 use crate::service::protocol_to_rpc;
 use moc_i18n::t;
 use moc_protocol::RpcError;
+use moc_protocol::commands::{CommandParamMeta, ParamChoiceMeta, ParamKind};
 use moc_protocol::methods::PluginCommandInfo;
 use moc_protocol::methods::PluginInfo;
 use moc_protocol::methods::PluginToolInfo;
 use moc_protocol::methods::SessionUpdate;
+use std::borrow::Cow;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -64,6 +66,40 @@ pub(crate) fn plugin_tools_of(host: &moc_plugin::PluginHost) -> Vec<Arc<dyn crat
         .collect()
 }
 
+fn project_command_param(param: moc_plugin::CommandParamDecl) -> CommandParamMeta {
+    let kind = match param.kind {
+        moc_plugin::CommandParamKind::Text => ParamKind::Text,
+        moc_plugin::CommandParamKind::Path => ParamKind::Path,
+        moc_plugin::CommandParamKind::Choice => ParamKind::Choice,
+        moc_plugin::CommandParamKind::Number => ParamKind::Number,
+        moc_plugin::CommandParamKind::Token => ParamKind::Token,
+    };
+    CommandParamMeta {
+        name: Cow::Owned(param.name),
+        kind,
+        required: param.required,
+        accepts_text: param.accepts_text,
+        description: Cow::Owned(param.description),
+        placeholder: param.placeholder.map(Cow::Owned),
+        default_behavior: param.default_behavior.map(Cow::Owned),
+        choices: param
+            .choices
+            .into_iter()
+            .map(|choice| ParamChoiceMeta {
+                value: Cow::Owned(choice.value),
+                label: choice.label.map(Cow::Owned),
+                description: Cow::Owned(choice.description),
+                params: choice
+                    .params
+                    .into_iter()
+                    .map(project_command_param)
+                    .collect(),
+            })
+            .collect(),
+        dynamic: None,
+    }
+}
+
 /// 插件清单的协议投影；`plugin/list` 与 `plugin/reload` 用同一份映射。
 pub(super) fn plugin_infos(host: &moc_plugin::PluginHost) -> Vec<PluginInfo> {
     host.info()
@@ -90,6 +126,11 @@ pub(super) fn plugin_infos(host: &moc_plugin::PluginHost) -> Vec<PluginInfo> {
                     name: command.name,
                     description: command.description,
                     usage: command.usage,
+                    params: command
+                        .params
+                        .into_iter()
+                        .map(project_command_param)
+                        .collect(),
                 })
                 .collect(),
             error: info.error,

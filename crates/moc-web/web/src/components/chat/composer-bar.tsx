@@ -35,6 +35,7 @@ import {
   buildSubmenuItems,
   type CommandContext,
   firstEnabledIndex,
+  parseCommandChip,
   resolveStage2,
   type SubmenuAction,
   stepEnabledIndex,
@@ -43,7 +44,7 @@ import { t, useT } from "@/lib/i18n";
 import { leadSelector, parseSelector } from "@/lib/models";
 import { useRefInfo } from "@/lib/ref-inspect";
 import { insertToken, remapImageRefs, scanRefs, uniqueRefName } from "@/lib/refs";
-import { commandToken, fromMeta, runSlash, type SlashCommand } from "@/lib/slash";
+import { fromMeta, runSlash, type SlashCommand } from "@/lib/slash";
 import { cn, formatBytes } from "@/lib/utils";
 import { uploadSessionFile } from "@/lib/web-api";
 import { rpc } from "@/protocol/client";
@@ -65,6 +66,7 @@ import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
 import { AddContextMenu, type AttachKind } from "./add-context-menu";
+import { CommandChipEditor } from "./command-chip-editor";
 import { CommandArgMenu, CommandMenu, CommandParamHint } from "./command-menu";
 import { ComposerEditor, type ComposerEditorHandle, type EditorChip } from "./composer-editor";
 import {
@@ -184,6 +186,7 @@ function pluginSlashCommands(plugins: PluginInfo[] | null | undefined): SlashCom
           name: command.name,
           description: command.description,
           usage: command.usage || undefined,
+          params: command.params?.length ? command.params : undefined,
           plugin: plugin.name,
           needsSession: true,
         })),
@@ -224,6 +227,9 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const [missingParamError, setMissingParamError] = useState(false);
   /** Esc 关闭补全或叶子填充后记下当时的输入，内容变化前不再弹出。 */
   const [dismissedAt, setDismissedAt] = useState<string | null>(null);
+  /** 点开命令胶囊编辑非自然语言参数的浮层开关。 */
+  const [chipEditorOpen, setChipEditorOpen] = useState(false);
+  const chipAnchorRef = useRef<HTMLElement | null>(null);
   const [resources, setResources] = useState<{
     prefix: string;
     kind?: AttachKind;
@@ -308,7 +314,11 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
 
   // ---------- 引用控件 ----------
 
-  const command = useMemo(() => commandToken(text, commands), [text, commands]);
+  const parsedCommand = useMemo(
+    () => (bashMode ? null : parseCommandChip(text, commands, commandCtx, typingAt)),
+    [bashMode, text, commands, commandCtx, typingAt],
+  );
+  const command = parsedCommand ? { start: parsedCommand.start, end: parsedCommand.end } : null;
   const fileNames = useMemo(() => files.map((file) => file.name), [files]);
   const spans = useMemo(
     () =>
@@ -326,10 +336,28 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const refInfo = useRefInfo(isDraft ? null : sessionId, resourceTokens);
   const chips: EditorChip[] = spans.flatMap((span): EditorChip[] => {
     const at = { from: span.from, to: span.to };
-    if (span.kind === "command") {
-      const meta = commands.find((entry) => `/${entry.name}` === span.token);
+    if (span.kind === "command" && parsedCommand) {
+      const chipArgs = parsedCommand.chipArgs.map((arg) => arg.value);
+      const lastDesc =
+        parsedCommand.chipArgs.at(-1)?.matchedChoice?.description ||
+        parsedCommand.command.description;
+      const detail = parsedCommand.editable
+        ? lastDesc
+          ? `${lastDesc} · ${t("cmd.click_to_edit")}`
+          : t("cmd.click_to_edit")
+        : parsedCommand.command.description;
       return [
-        { ...at, chip: { kind: "command", label: span.token.slice(1), detail: meta?.description } },
+        {
+          ...at,
+          chip: {
+            kind: "command",
+            label: parsedCommand.typedName,
+            args: chipArgs.length > 0 ? chipArgs : undefined,
+            detail,
+            interactive: parsedCommand.editable,
+            active: chipEditorOpen,
+          },
+        },
       ];
     }
     if (span.kind === "image") {
@@ -368,10 +396,22 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   });
   // 指纹不含缩略图 data URL（可能几 MB），图片身份由 id 表达。
   const chipsKey = `${chips
-    .map(({ from, to, chip }) => `${from}:${to}:${chip.kind}:${chip.label}:${chip.detail ?? ""}`)
+    .map(
+      ({ from, to, chip }) =>
+        `${from}:${to}:${chip.kind}:${chip.label}:${chip.args?.join("\0") ?? ""}:${chip.detail ?? ""}:${chip.interactive ? 1 : 0}:${chip.active ? 1 : 0}`,
+    )
     .join("\n")}|${images.map((image) => image.id).join(",")}`;
   // biome-ignore lint/correctness/useExhaustiveDependencies: chipsKey 是 chips 的内容指纹，避免每次渲染都重建装饰
   const stableChips = useMemo(() => chips, [chipsKey]);
+
+  const canEditCommandChip = Boolean(parsedCommand?.editable && !bashMode);
+  useEffect(() => {
+    if (!canEditCommandChip) setChipEditorOpen(false);
+  }, [canEditCommandChip]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 切换会话时收起命令胶囊编辑浮层
+  useEffect(() => {
+    setChipEditorOpen(false);
+  }, [sessionId]);
 
   useEffect(() => {
     if (!tokenPrefix || isDraft) return;
@@ -404,31 +444,56 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     () => (dismissedAt === text ? [] : resourceItems.map(resourceSuggestion)),
     [dismissedAt, text, resourceItems],
   );
-  // 资源补全（`@路径` / `skill://`）在命令参数内优先弹出，不与阶段二参数浮层冲突。
-  const stage2 = useMemo(
-    () =>
+  // 资源补全（`@路径` / `skill://`）在命令参数内优先弹出，不与阶段二参数浮层冲突；
+  // 若命令胶囊已收拢完整非自然语言参数且无缺失必填项（如 `/export ./notes.md`），不叠放多余引导条。
+  const stage2 = useMemo(() => {
+    if (
+      chipEditorOpen ||
       dismissedAt === text ||
       commandEntries.length > 0 ||
       activeResourceSuggestions.length > 0 ||
       token !== null
-        ? null
-        : resolveStage2(text, cursor, commands, features, commandCtx, preferHintFor === text),
-    [
-      dismissedAt,
+    ) {
+      return null;
+    }
+    const resolved = resolveStage2(
       text,
-      commandEntries.length,
-      activeResourceSuggestions.length,
-      token,
       cursor,
       commands,
       features,
       commandCtx,
-      preferHintFor,
-    ],
-  );
+      preferHintFor === text,
+    );
+    if (
+      resolved?.kind === "hint" &&
+      !resolved.missingRequired &&
+      typingAt === null &&
+      parsedCommand &&
+      parsedCommand.chipArgs.length > 0 &&
+      parsedCommand.end === text.length
+    ) {
+      return null;
+    }
+    return resolved;
+  }, [
+    chipEditorOpen,
+    dismissedAt,
+    text,
+    commandEntries.length,
+    activeResourceSuggestions.length,
+    token,
+    cursor,
+    commands,
+    features,
+    commandCtx,
+    preferHintFor,
+    typingAt,
+    parsedCommand,
+  ]);
 
-  const activeOverlay =
-    commandEntries.length > 0
+  const activeOverlay = chipEditorOpen
+    ? null
+    : commandEntries.length > 0
       ? "commands"
       : activeResourceSuggestions.length > 0
         ? "resources"
@@ -449,15 +514,17 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     [activeCommandEntry, commandCtx],
   );
   const ghostHint =
-    !bashMode && activeResourceSuggestions.length === 0 && token === null
+    !bashMode && !chipEditorOpen && activeResourceSuggestions.length === 0 && token === null
       ? stage2?.ghostPlaceholder
       : undefined;
 
-  // 当前工作区尚未拉过 MCP 快照时，高亮 `/mcp` 或进入 `/mcp ` 时按需刷新一次以提供实时 server 列表。
+  // 当前工作区尚未拉过 MCP 快照时，高亮 `/mcp`、进入 `/mcp ` 或点开 `/mcp` 胶囊编辑时按需刷新一次。
   const needsMcpServers =
     !mcpSnapshot &&
     Boolean(effectiveCwd) &&
-    (activeCommandEntry?.command.name === "mcp" || stage2?.command.name === "mcp");
+    (activeCommandEntry?.command.name === "mcp" ||
+      stage2?.command.name === "mcp" ||
+      (chipEditorOpen && parsedCommand?.command.name === "mcp"));
   useEffect(() => {
     if (!needsMcpServers || !effectiveCwd) return;
     void useMcp
@@ -1017,18 +1084,61 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     return false;
   };
 
-  const onEditorChange = (value: string, caret: number, typed: boolean) => {
+  const onEditorChange = (value: string, caret: number, typed: boolean, deleted = false) => {
     const plan = PLAN_PREFIX.exec(value);
     if (plan && consumePlan(value.slice(plan[0].length))) return;
     setText(value);
     setCursor(caret);
-    setTypingAt(typed ? caret : null);
+    setTypingAt((prev) => (typed || (deleted && prev !== null) ? caret : null));
   };
 
   const onEditorCursor = (caret: number) => {
     setCursor(caret);
     setTypingAt(null);
   };
+
+  const onEditorBlur = () => {
+    setTypingAt(null);
+  };
+
+  const onChipClick = (entry: EditorChip, element: HTMLElement) => {
+    if (entry.chip.kind !== "command" || !parsedCommand?.editable) return;
+    chipAnchorRef.current = element;
+    setTypingAt(null);
+    setChipEditorOpen((open) => {
+      if (open) {
+        requestAnimationFrame(() => editorRef.current?.focus());
+        return false;
+      }
+      return true;
+    });
+  };
+
+  const applyChipEdit = (
+    nextText: string,
+    nextCaret: number,
+    close: boolean,
+    expectsText: boolean,
+  ) => {
+    useComposer.getState().setText(sessionId, nextText);
+    setDismissedAt(close && !expectsText ? nextText : null);
+    setPreferHintFor(null);
+    setMissingParamError(false);
+    setCursor(nextCaret);
+    setTypingAt(null);
+    if (close) {
+      setChipEditorOpen(false);
+      requestAnimationFrame(() => editorRef.current?.setCaret(nextCaret));
+    }
+  };
+
+  const closeChipEditor = (restoreFocus: boolean) => {
+    setChipEditorOpen(false);
+    if (restoreFocus) requestAnimationFrame(() => editorRef.current?.focus());
+  };
+
+  const getChipAnchor = () =>
+    editorRef.current?.commandChipElement() ?? chipAnchorRef.current ?? editorBoxRef.current;
 
   // ---------- 渲染 ----------
 
@@ -1228,6 +1338,8 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                     }}
                     onChange={onEditorChange}
                     onCursor={onEditorCursor}
+                    onBlur={onEditorBlur}
+                    onChipClick={onChipClick}
                     onKeyDown={onKeyDown}
                     onPaste={onPaste}
                     onCopy={onCopy}
@@ -1290,6 +1402,19 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                 />
               )}
             </Popover>
+
+            {parsedCommand?.editable && (
+              <CommandChipEditor
+                open={chipEditorOpen}
+                side={inline ? "bottom" : "top"}
+                parsed={parsedCommand}
+                text={text}
+                ctx={commandCtx}
+                getAnchorElement={getChipAnchor}
+                onApply={applyChipEdit}
+                onClose={closeChipEditor}
+              />
+            )}
 
             <div className="flex min-h-12 flex-wrap items-center gap-1 px-2.5 pb-2 sm:px-3">
               <input

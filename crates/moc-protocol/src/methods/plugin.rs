@@ -1,5 +1,6 @@
 //! 插件系统的方法：列出已加载插件、执行插件斜杠命令。
 
+use crate::commands::CommandParamMeta;
 use crate::method::{ClientRequest, Method};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -53,13 +54,16 @@ pub struct PluginToolInfo {
     /// 该工具可见的执行模式（`default`/`ask`/`plan`）。
     pub modes: Vec<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PluginCommandInfo {
     pub name: String,
     pub description: String,
     #[serde(default)]
     pub usage: String,
+    /// 可选结构化参数声明；与内置命令共用 [`CommandParamMeta`]，省略时前端按 `usage` 降级处理。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<CommandParamMeta>,
 }
 
 /// `plugin/reload`：丢弃该工作区的插件宿主并重新发现、加载。
@@ -128,5 +132,42 @@ mod tests {
         });
         let tool: PluginToolInfo = serde_json::from_value(expected.clone()).expect("工具声明");
         assert_eq!(serde_json::to_value(tool).expect("序列化"), expected);
+    }
+
+    #[test]
+    fn plugin_command_info_round_trips_legacy_and_structured_params() {
+        let legacy = json!({
+            "name": "hello",
+            "description": "问候",
+            "usage": "[称呼]",
+        });
+        let decoded: PluginCommandInfo = serde_json::from_value(legacy.clone()).expect("旧形状");
+        assert!(decoded.params.is_empty());
+        assert_eq!(serde_json::to_value(&decoded).expect("序列化"), legacy);
+
+        let structured = json!({
+            "name": "loop",
+            "description": "重复执行指令",
+            "usage": "",
+            "params": [
+                {
+                    "name": "count",
+                    "kind": "number",
+                    "required": true,
+                    "description": "重复次数",
+                    "placeholder": "例如 3",
+                },
+                {
+                    "name": "command",
+                    "kind": "text",
+                    "required": true,
+                    "description": "指令内容",
+                },
+            ],
+        });
+        let decoded: PluginCommandInfo =
+            serde_json::from_value(structured.clone()).expect("带结构化参数");
+        assert_eq!(decoded.params.len(), 2);
+        assert_eq!(serde_json::to_value(&decoded).expect("序列化"), structured);
     }
 }

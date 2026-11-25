@@ -1120,6 +1120,62 @@
       ],
       "type": "object"
     },
+    "CommandParamMeta": {
+      "additionalProperties": false,
+      "description": "可序列化的结构化参数元数据（内置 `/commands.json` 与插件 `plugin/list` 共用）。",
+      "properties": {
+        "acceptsText": {
+          "type": "boolean"
+        },
+        "choices": {
+          "items": {
+            "$ref": "#/$defs/ParamChoiceMeta"
+          },
+          "type": "array"
+        },
+        "defaultBehavior": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "dynamic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DynamicSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/ParamKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "placeholder": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "required",
+        "description"
+      ],
+      "type": "object"
+    },
     "CompactResult": {
       "additionalProperties": false,
       "description": "一次上下文压缩的结果。",
@@ -1892,6 +1948,21 @@
         {
           "const": "insert",
           "description": "新文件中新增的行。",
+          "type": "string"
+        }
+      ]
+    },
+    "DynamicSource": {
+      "description": "运行时动态参数来源：前端从已有状态实时供给候选与状态标记。",
+      "oneOf": [
+        {
+          "const": "sandbox_mode",
+          "description": "沙盒权限模式（`full` / `workspace` / `workspace_only`）。",
+          "type": "string"
+        },
+        {
+          "const": "mcp_server",
+          "description": "当前工作区的 MCP 服务列表。",
           "type": "string"
         }
       ]
@@ -3836,6 +3907,70 @@
       ],
       "type": "object"
     },
+    "ParamChoiceMeta": {
+      "additionalProperties": false,
+      "description": "可序列化的静态枚举 / 子命令候选元数据（内置命令零拷贝借用，插件命令持有所有权）。",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "params": {
+          "items": {
+            "$ref": "#/$defs/CommandParamMeta"
+          },
+          "type": "array"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "description"
+      ],
+      "type": "object"
+    },
+    "ParamKind": {
+      "description": "参数填写形态：驱动前端的二级菜单、参数补全、命令胶囊收拢与输入引导。",
+      "oneOf": [
+        {
+          "const": "text",
+          "description": "自由文本（自然语言：问题、提示、目标原文、执行指令等，留在胶囊外）。",
+          "type": "string"
+        },
+        {
+          "const": "path",
+          "description": "文件或目录路径（非自然语言，纳入命令胶囊）。",
+          "type": "string"
+        },
+        {
+          "const": "choice",
+          "description": "固定子命令或枚举候选（见 `choices`，非自然语言，纳入命令胶囊）。",
+          "type": "string"
+        },
+        {
+          "const": "dynamic",
+          "description": "运行时动态候选（见 `dynamic`），可同时附加静态 `choices`（如 `permission` 的 `clear`，纳入命令胶囊）。",
+          "type": "string"
+        },
+        {
+          "const": "number",
+          "description": "数值参数（如次数、秒数、上限，非自然语言，纳入命令胶囊）。",
+          "type": "string"
+        },
+        {
+          "const": "token",
+          "description": "单个结构化 token 参数（非自然语言，如标识、标签、间隔字面量，纳入命令胶囊）。",
+          "type": "string"
+        }
+      ]
+    },
     "PermissionOption": {
       "additionalProperties": false,
       "description": "一个可选答案。",
@@ -4136,6 +4271,13 @@
         },
         "name": {
           "type": "string"
+        },
+        "params": {
+          "description": "可选结构化参数声明；与内置命令共用 [`CommandParamMeta`]，省略时前端按 `usage` 降级处理。",
+          "items": {
+            "$ref": "#/$defs/CommandParamMeta"
+          },
+          "type": "array"
         },
         "usage": {
           "default": "",

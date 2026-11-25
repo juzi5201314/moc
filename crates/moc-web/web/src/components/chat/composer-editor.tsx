@@ -33,6 +33,8 @@ export type ComposerEditorHandle = {
   focus: () => void;
   setCaret: (position: number) => void;
   element: () => HTMLElement | null;
+  /** 当前编辑器里命令胶囊的真实 DOM 节点（供参数编辑浮层锚定）。 */
+  commandChipElement: () => HTMLElement | null;
 };
 
 type Props = {
@@ -46,9 +48,12 @@ type Props = {
   minHeight: number;
   maxHeight: number;
   attributes: Record<string, string>;
-  /** `typed`：这次变化来自逐字键入（引用此时还在输入中，不应成形）。 */
-  onChange: (value: string, cursor: number, typed: boolean) => void;
+  /** `typed`：逐字键入；`deleted`：退格/前向删除（用于保持未成形 token 的键入保护）。 */
+  onChange: (value: string, cursor: number, typed: boolean, deleted?: boolean) => void;
   onCursor: (cursor: number) => void;
+  onBlur?: () => void;
+  /** 点击可交互胶囊（如带非自然语言参数的命令胶囊）时触发。 */
+  onChipClick?: (chip: EditorChip, element: HTMLElement) => void;
   /** 返回 true 表示已处理，编辑器不再按默认键位响应。 */
   onKeyDown: (event: KeyboardEvent, view: EditorView) => boolean;
   onPaste: (event: ClipboardEvent, view: EditorView) => boolean;
@@ -56,33 +61,62 @@ type Props = {
   ref?: Ref<ComposerEditorHandle>;
 };
 
-/** 控件槽位登记：CodeMirror 建/毁 DOM 时通知 React 增删 portal。 */
+/** 控件槽位登记：CodeMirror 建/改/毁 DOM 时通知 React 同步 portal。 */
 type SlotHost = {
-  mount: (element: HTMLElement, chip: RefChipData) => void;
+  mount: (element: HTMLElement, entry: EditorChip) => void;
+  update: (element: HTMLElement, entry: EditorChip) => void;
   unmount: (element: HTMLElement) => void;
 };
 
+function sameArgs(left?: string[], right?: string[]): boolean {
+  if (left === right) return true;
+  if (!left || !right || left.length !== right.length) return false;
+  return left.every((item, index) => item === right[index]);
+}
+
 class ChipWidget extends WidgetType {
-  readonly chip: RefChipData;
+  readonly entry: EditorChip;
   readonly host: SlotHost;
-  constructor(chip: RefChipData, host: SlotHost) {
+  constructor(entry: EditorChip, host: SlotHost) {
     super();
-    this.chip = chip;
+    this.entry = entry;
     this.host = host;
   }
   eq(other: ChipWidget) {
     return (
-      other.chip.kind === this.chip.kind &&
-      other.chip.label === this.chip.label &&
-      other.chip.detail === this.chip.detail &&
-      other.chip.thumb === this.chip.thumb
+      other.entry.from === this.entry.from &&
+      other.entry.to === this.entry.to &&
+      other.entry.chip.kind === this.entry.chip.kind &&
+      other.entry.chip.label === this.entry.chip.label &&
+      other.entry.chip.detail === this.entry.chip.detail &&
+      other.entry.chip.thumb === this.entry.chip.thumb &&
+      other.entry.chip.interactive === this.entry.chip.interactive &&
+      other.entry.chip.active === this.entry.chip.active &&
+      sameArgs(other.entry.chip.args, this.entry.chip.args)
     );
   }
   toDOM() {
     const element = document.createElement("span");
     element.className = "cm-ref-chip";
-    this.host.mount(element, this.chip);
+    element.dataset.chipKind = this.entry.chip.kind;
+    this.host.mount(element, this.entry);
     return element;
+  }
+  /** 同类胶囊原地复用 DOM 节点，避免参数变化时锚定其上的编辑浮层跳动或重建。 */
+  updateDOM(element: HTMLElement) {
+    if (element.dataset.chipKind !== this.entry.chip.kind) return false;
+    this.host.update(element, this.entry);
+    return true;
+  }
+  ignoreEvent(event: Event) {
+    if (!this.entry.chip.interactive) return false;
+    return (
+      event.type === "mousedown" ||
+      event.type === "pointerdown" ||
+      event.type === "mouseup" ||
+      event.type === "pointerup" ||
+      event.type === "click"
+    );
   }
   destroy(element: HTMLElement) {
     this.host.unmount(element);
@@ -171,6 +205,8 @@ export function ComposerEditor({
   attributes,
   onChange,
   onCursor,
+  onBlur,
+  onChipClick,
   onKeyDown,
   onPaste,
   onCopy,
@@ -178,15 +214,18 @@ export function ComposerEditor({
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
-  const handlers = useRef({ onChange, onCursor, onKeyDown, onPaste, onCopy });
-  handlers.current = { onChange, onCursor, onKeyDown, onPaste, onCopy };
-  const [slots, setSlots] = useState<ReadonlyMap<HTMLElement, RefChipData>>(new Map());
+  const handlers = useRef({ onChange, onCursor, onBlur, onChipClick, onKeyDown, onPaste, onCopy });
+  handlers.current = { onChange, onCursor, onBlur, onChipClick, onKeyDown, onPaste, onCopy };
+  const [slots, setSlots] = useState<ReadonlyMap<HTMLElement, EditorChip>>(new Map());
   const slotIds = useRef(new WeakMap<HTMLElement, number>());
   const nextSlot = useRef(0);
   const slotHost = useRef<SlotHost>({
-    mount: (element, chip) => {
+    mount: (element, entry) => {
       slotIds.current.set(element, nextSlot.current++);
-      setSlots((current) => new Map(current).set(element, chip));
+      setSlots((current) => new Map(current).set(element, entry));
+    },
+    update: (element, entry) => {
+      setSlots((current) => new Map(current).set(element, entry));
     },
     unmount: (element) =>
       setSlots((current) => {
@@ -221,6 +260,10 @@ export function ComposerEditor({
               paste: (event, view) => handlers.current.onPaste(event, view),
               copy: (event, view) => handlers.current.onCopy(event, view, false),
               cut: (event, view) => handlers.current.onCopy(event, view, true),
+              blur: () => {
+                handlers.current.onBlur?.();
+                return false;
+              },
               // 拖入的文件交给外层拖放区上传；CodeMirror 默认会把文件当文本读进来
               drop: (event) => Boolean(event.dataTransfer?.files.length),
             }),
@@ -235,7 +278,10 @@ export function ComposerEditor({
               const typed = update.transactions.some((transaction) =>
                 transaction.isUserEvent("input.type"),
               );
-              handlers.current.onChange(update.state.doc.toString(), head, typed);
+              const deleted = update.transactions.some((transaction) =>
+                transaction.isUserEvent("delete"),
+              );
+              handlers.current.onChange(update.state.doc.toString(), head, typed, deleted);
             } else if (update.selectionSet) {
               handlers.current.onCursor(head);
             }
@@ -257,11 +303,11 @@ export function ComposerEditor({
     const current = view.state.doc.toString();
     const decorations = Decoration.set(
       chips
-        .filter((chip) => chip.to <= value.length && chip.from < chip.to)
-        .map((chip) =>
-          Decoration.replace({ widget: new ChipWidget(chip.chip, slotHost.current) }).range(
-            chip.from,
-            chip.to,
+        .filter((entry) => entry.to <= value.length && entry.from < entry.to)
+        .map((entry) =>
+          Decoration.replace({ widget: new ChipWidget(entry, slotHost.current) }).range(
+            entry.from,
+            entry.to,
           ),
         ),
       true,
@@ -329,14 +375,28 @@ export function ComposerEditor({
         view.focus();
       },
       element: () => viewRef.current?.dom ?? null,
+      commandChipElement: () =>
+        hostRef.current?.querySelector<HTMLElement>('.cm-ref-chip[data-chip-kind="command"]') ??
+        null,
     }),
     [],
   );
 
   return (
     <div ref={hostRef} className={cn("w-full", className)}>
-      {[...slots].map(([element, chip]) =>
-        createPortal(<RefChip chip={chip} />, element, String(slotIds.current.get(element))),
+      {[...slots].map(([element, entry]) =>
+        createPortal(
+          <RefChip
+            chip={entry.chip}
+            onClick={
+              entry.chip.interactive
+                ? () => handlers.current.onChipClick?.(entry, element)
+                : undefined
+            }
+          />,
+          element,
+          String(slotIds.current.get(element)),
+        ),
       )}
     </div>
   );

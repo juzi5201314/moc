@@ -39,7 +39,22 @@ tool_params_schema = { zh = "工具 `%{name}` 的 parameters 必须是 JSON Sche
 tool_missing_run = { zh = "工具 `%{name}` 缺少 run 函数", en = "Tool `%{name}` is missing its run function" }
 cmd_name_invalid = { zh = "命令名 `%{name}` 不合法（与插件名同规则，用作 /%{name}）", en = "Command name `%{name}` is invalid (same rules as plugin names; used as /%{name})" }
 cmd_decl_object = { zh = "命令 `%{name}` 的声明必须是对象", en = "Command `%{name}`'s declaration must be an object" }
+cmd_unknown_field = { zh = "命令 `%{name}` 的声明里有未知字段 `%{key}`", en = "Command `%{name}`'s declaration contains unknown field `%{key}`" }
 cmd_missing_run = { zh = "命令 `%{name}` 缺少 run 函数", en = "Command `%{name}` is missing its run function" }
+cmd_params_array = { zh = "命令 `%{name}` 的 params 必须是参数声明数组", en = "Command `%{name}`'s params must be an array of parameter declarations" }
+cmd_params_depth = { zh = "命令 `%{name}` 的 params 嵌套层数超过上限（最多 4 层）", en = "Command `%{name}`'s params nesting exceeds the maximum depth (4)" }
+cmd_param_object = { zh = "命令 `%{name}` 的 params 项必须是对象", en = "Each item in command `%{name}`'s params must be an object" }
+cmd_param_unknown_field = { zh = "命令 `%{name}` 的参数声明里有未知字段 `%{key}`", en = "Command `%{name}`'s parameter declaration contains unknown field `%{key}`" }
+cmd_param_name = { zh = "命令 `%{name}` 的参数 name 必须是 1–64 字节非空且不含空白的字符串", en = "Command `%{name}`'s parameter name must be a 1-64 byte non-empty string without whitespace" }
+cmd_param_kind = { zh = "命令 `%{name}` 的参数 `%{param}` kind 必须是 text / path / choice / number / token", en = "Command `%{name}`'s parameter `%{param}` kind must be one of text / path / choice / number / token" }
+cmd_param_accepts_text = { zh = "命令 `%{name}` 的参数 `%{param}` 只有 choice 类型可以设置 acceptsText", en = "Command `%{name}`'s parameter `%{param}` can only set acceptsText when kind is choice" }
+cmd_param_choices_required = { zh = "命令 `%{name}` 的 choice 参数 `%{param}` 必须提供非空 choices 数组", en = "Command `%{name}`'s choice parameter `%{param}` requires a non-empty choices array" }
+cmd_param_choices_forbidden = { zh = "命令 `%{name}` 的非 choice 参数 `%{param}` 不能提供 choices", en = "Command `%{name}`'s non-choice parameter `%{param}` must not specify choices" }
+cmd_param_choices_array = { zh = "命令 `%{name}` 的参数 `%{param}` choices 必须是选项对象数组", en = "Command `%{name}`'s parameter `%{param}` choices must be an array of choice objects" }
+cmd_param_choice_object = { zh = "命令 `%{name}` 的参数 `%{param}` choices 项必须是对象", en = "Each item in command `%{name}`'s parameter `%{param}` choices must be an object" }
+cmd_param_choice_unknown_field = { zh = "命令 `%{name}` 的参数 `%{param}` 选项里有未知字段 `%{key}`", en = "A choice in command `%{name}`'s parameter `%{param}` contains unknown field `%{key}`" }
+cmd_param_choice_value = { zh = "命令 `%{name}` 的参数 `%{param}` 选项 value 必须是 1–64 字节非空且不含空白的字符串", en = "Each choice value in command `%{name}`'s parameter `%{param}` must be a 1-64 byte non-empty string without whitespace" }
+cmd_param_choice_dup = { zh = "命令 `%{name}` 的参数 `%{param}` 选项 value `%{value}` 重复", en = "Duplicate choice value `%{value}` in command `%{name}`'s parameter `%{param}`" }
 hook_unknown = { zh = "未知钩子 `%{name}`（支持：%{supported}）", en = "Unknown hook `%{name}` (supported: %{supported})" }
 hook_not_fn = { zh = "钩子 `%{name}` 必须是函数", en = "Hook `%{name}` must be a function" }
 prompt_not_fn = { zh = "`prompt` 必须是函数", en = "`prompt` must be a function" }

@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { SlashCommand } from "@/lib/slash";
 import {
+  applyCommandChipEdit,
   buildCommandEntries,
   buildSubmenuItems,
   type CommandContext,
   commandTrailing,
   firstEnabledIndex,
+  parseCommandChip,
   resolveStage2,
   stepEnabledIndex,
 } from "./command-params";
@@ -335,5 +337,84 @@ describe("command-params 结构化参数引擎", () => {
     if (cleanup?.kind === "choices") {
       expect(cleanup.items[0].fillText).toBe("/compact-skills cleanup all");
     }
+  });
+
+  it("命令胶囊收拢非自然语言参数（含多级子命令、路径与插件 usage），保留自然语言正文并支持编辑写回", () => {
+    const loopCmd: SlashCommand = {
+      name: "loop",
+      description: "重复执行指令",
+      usage: "<count> <command>",
+      plugin: "demo",
+    };
+    const all = [...COMMANDS, loopCmd];
+
+    // 非自然语言子命令进入胶囊；自由文本自然语言留在胶囊外。
+    const goalPause = parseCommandChip("/goal pause", all, BASE_CTX);
+    expect(goalPause?.tokens).toEqual(["goal", "pause"]);
+    expect(goalPause?.trailingText).toBe("");
+    expect(goalPause?.editable).toBe(true);
+
+    const goalEdit = parseCommandChip("/goal edit 修复单测", all, BASE_CTX);
+    expect(goalEdit?.tokens).toEqual(["goal", "edit"]);
+    expect(goalEdit?.trailingText).toBe(" 修复单测");
+
+    const goalText = parseCommandChip("/goal 修复单测", all, BASE_CTX);
+    expect(goalText?.tokens).toEqual(["goal"]);
+    expect(goalText?.trailingText).toBe(" 修复单测");
+
+    // 键入中的参数 token 暂不吞入，避免逐字输入/退格时跳变。
+    const goalTyping = parseCommandChip("/goal pause", all, BASE_CTX, 11);
+    expect(goalTyping?.tokens).toEqual(["goal"]);
+    expect(goalTyping?.trailingText).toBe(" pause");
+
+    // 多级子命令、动态参数与路径参数全部收拢进胶囊。
+    expect(parseCommandChip("/compact-skills cleanup all", all, BASE_CTX)?.tokens).toEqual([
+      "compact-skills",
+      "cleanup",
+      "all",
+    ]);
+    expect(parseCommandChip("/mcp reconnect github", all, BASE_CTX)?.tokens).toEqual([
+      "mcp",
+      "reconnect",
+      "github",
+    ]);
+    expect(parseCommandChip("/export ./notes/session.md", all, BASE_CTX)?.tokens).toEqual([
+      "export",
+      "./notes/session.md",
+    ]);
+    // 纯自然语言或无参命令不进入可编辑态。
+    expect(parseCommandChip("/ask 这个函数做什么", all, BASE_CTX)).toMatchObject({
+      tokens: ["ask"],
+      trailingText: " 这个函数做什么",
+      editable: false,
+    });
+    expect(parseCommandChip("/new", all, BASE_CTX)).toMatchObject({
+      tokens: ["new"],
+      editable: false,
+    });
+
+    // 插件命令 `/loop 3 echo pong`：`3` 进胶囊，` echo pong` 留作正文。
+    const loopParsed = parseCommandChip("/loop 3 echo pong", all, BASE_CTX);
+    expect(loopParsed?.tokens).toEqual(["loop", "3"]);
+    expect(loopParsed?.trailingText).toBe(" echo pong");
+    expect(loopParsed?.editable).toBe(true);
+    expect(
+      loopParsed && applyCommandChipEdit(loopParsed, "/loop 3 echo pong", ["5"], BASE_CTX),
+    ).toEqual({
+      text: "/loop 5 echo pong",
+      caret: 17,
+      expectsText: true,
+    });
+
+    // 混合命令切分支：edit ↔ 直接目标保留正文；切到无正文叶子动作时清理原正文。
+    expect(
+      goalEdit && applyCommandChipEdit(goalEdit, "/goal edit 修复单测", [""], BASE_CTX),
+    ).toMatchObject({ text: "/goal 修复单测" });
+    expect(
+      goalEdit && applyCommandChipEdit(goalEdit, "/goal edit 修复单测", ["pause"], BASE_CTX),
+    ).toMatchObject({ text: "/goal pause" });
+    expect(goalPause && applyCommandChipEdit(goalPause, "/goal pause", ["edit"], BASE_CTX)).toEqual(
+      { text: "/goal edit ", caret: 11, expectsText: true },
+    );
   });
 });
