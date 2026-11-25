@@ -28,6 +28,7 @@ import { useGlobalShortcuts } from "@/lib/shortcuts";
 import { useThemeSync } from "@/lib/theme";
 import { rpc } from "@/protocol/client";
 import { createQuickSession } from "@/store/lifecycle";
+import { useSessionMeta } from "@/store/session-meta";
 import { useTabs } from "@/store/tabs";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
@@ -70,6 +71,12 @@ export function App() {
   useEffect(() => {
     if (!active && !inPlayground) createQuickSession();
   }, [active, inPlayground]);
+
+  useEffect(() => {
+    if (route === "agent" && active && active !== "draft-session") {
+      useSessionMeta.getState().markRead(active);
+    }
+  }, [route, active]);
 
   return (
     <TooltipProvider delayDuration={300}>

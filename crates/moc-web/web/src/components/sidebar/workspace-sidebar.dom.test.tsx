@@ -5,8 +5,10 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import type { PlaygroundSessionSummary } from "@/lib/image-playground-api";
 import type { SessionInfo } from "@/protocol/types";
 import { useImagePlayground } from "@/store/image-playground";
+import { SESSION_ORDER_KEY, SESSION_UNREAD_KEY, useSessionMeta } from "@/store/session-meta";
 import { useSessions } from "@/store/sessions";
 import { useTabs } from "@/store/tabs";
+import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
 import { useWorkflow } from "@/store/workflow";
 import { WorkspaceSidebar } from "./workspace-sidebar";
@@ -15,12 +17,17 @@ const initial = useWorkflow.getState();
 const initialSettings = useUi.getState().settings;
 const initialSessions = useSessions.getState();
 const initialTabs = useTabs.getState();
+const initialTranscript = useTranscript.getState();
 const initialPlayground = useImagePlayground.getState();
 afterEach(() => {
   cleanup();
+  localStorage.removeItem(SESSION_ORDER_KEY);
+  localStorage.removeItem(SESSION_UNREAD_KEY);
+  useSessionMeta.setState({ orderByCwd: {}, unread: {} });
   useWorkflow.setState(initial, true);
   useSessions.setState(initialSessions, true);
   useTabs.setState(initialTabs, true);
+  useTranscript.setState(initialTranscript, true);
   useImagePlayground.setState(initialPlayground, true);
   useUi.setState({ settings: initialSettings });
 });
@@ -214,4 +221,180 @@ it("Image Playground 侧栏会话列表同步支持分段展开与一键全部�
   fireEvent.click(sidebar.getAllByRole("button", { name: "Collapse" })[0]);
   expect(sidebar.getAllByRole("button", { name: /^生图 \d+$/ })).toHaveLength(10);
   expect(sidebar.getByRole("button", { name: "More +20 (30)" })).toBeTruthy();
+});
+
+it("支持同工作区拖拽排序、新会话自动置顶、重置顺序与自动 GC 清理，且三点按钮无矩形背景与焦点框", () => {
+  const make = (id: string, title: string, updatedAt: number): SessionInfo => ({
+    id,
+    title,
+    cwd: "/repo/moc",
+    model: "p/m",
+    engine: "standard",
+    autonomy: "default",
+    permission: "workspace",
+    plan_active: false,
+    fast_mode: false,
+    engine_locked: false,
+    created_at_ms: updatedAt,
+    updated_at_ms: updatedAt,
+  });
+  const s1 = make("s-1", "会话 1", 300);
+  const s2 = make("s-2", "会话 2", 200);
+  const s3 = make("s-3", "会话 3", 100);
+  useSessions.setState({ list: [s1, s2, s3], extra: {}, draftSession: null });
+
+  const sidebar = render(
+    <TooltipProvider>
+      <WorkspaceSidebar />
+    </TooltipProvider>,
+  );
+
+  // 右上角「…」按钮不带矩形背景与焦点外框。
+  const actionBtn = sidebar.getAllByRole("button", { name: "Session actions" })[0];
+  expect(actionBtn.className).not.toContain("hover:bg-accent");
+  expect(actionBtn.className).toContain("focus-visible:outline-none");
+
+  const titles = () =>
+    sidebar
+      .getAllByRole("button", { name: /^会话 \d+$/ })
+      .map((el) => el.getAttribute("aria-label"));
+  expect(titles()).toEqual(["会话 1", "会话 2", "会话 3"]);
+
+  // 把「会话 3」拖到「会话 1」上半区（before）。
+  const row1 = sidebar.getByRole("button", { name: "会话 1" }).parentElement;
+  const row3 = sidebar.getByRole("button", { name: "会话 3" }).parentElement;
+  if (!row1 || !row3) throw new Error("会话行缺失");
+  row1.getBoundingClientRect = () =>
+    ({
+      top: 100,
+      height: 44,
+      bottom: 144,
+      left: 0,
+      right: 200,
+      width: 200,
+      x: 0,
+      y: 100,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  fireEvent.dragStart(row3);
+  fireEvent(row1, new MouseEvent("dragover", { bubbles: true, cancelable: true, clientY: 105 }));
+  fireEvent.drop(row1);
+  expect(titles()).toEqual(["会话 3", "会话 1", "会话 2"]);
+  expect(JSON.parse(localStorage.getItem(SESSION_ORDER_KEY) ?? "{}")).toEqual({
+    "/repo/moc": ["s-3", "s-1", "s-2"],
+  });
+
+  // 已有会话更新时间戳不打乱手动顺序；新建会话自动置顶。
+  act(() => {
+    useSessions.getState().upsert({ ...s2, updated_at_ms: 900 });
+    useSessions.getState().upsert(make("s-4", "会话 4", 1000));
+  });
+  expect(titles()).toEqual(["会话 4", "会话 3", "会话 1", "会话 2"]);
+
+  // 拖到下半区（after）可将「会话 4」移到「会话 1」之后。
+  const row4 = sidebar.getByRole("button", { name: "会话 4" }).parentElement;
+  const row1After = sidebar.getByRole("button", { name: "会话 1" }).parentElement;
+  if (!row4 || !row1After) throw new Error("会话行缺失");
+  row1After.getBoundingClientRect = () =>
+    ({
+      top: 100,
+      height: 44,
+      bottom: 144,
+      left: 0,
+      right: 200,
+      width: 200,
+      x: 0,
+      y: 100,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  fireEvent.dragStart(row4);
+  fireEvent(
+    row1After,
+    new MouseEvent("dragover", { bubbles: true, cancelable: true, clientY: 138 }),
+  );
+  fireEvent.drop(row1After);
+  expect(titles()).toEqual(["会话 3", "会话 1", "会话 4", "会话 2"]);
+
+  // 删除与 prune 自动裁剪失效 ID，工作区剩余 <=1 条自定义项时回收整个 key。
+  act(() => {
+    useSessions.getState().remove("s-3");
+    useSessionMeta.getState().prune(
+      new Set(["s-4", "s-1"]),
+      new Map([
+        ["s-4", "/repo/moc"],
+        ["s-1", "/repo/moc"],
+      ]),
+    );
+  });
+  expect(JSON.parse(localStorage.getItem(SESSION_ORDER_KEY) ?? "{}")).toEqual({
+    "/repo/moc": ["s-1", "s-4"],
+  });
+  act(() => {
+    useSessions.getState().remove("s-4");
+  });
+  expect(localStorage.getItem(SESSION_ORDER_KEY)).toBeNull();
+  expect(useSessionMeta.getState().orderByCwd).toEqual({});
+});
+
+it("会话卡按 running > attention > unread > idle 显示指示点，未读状态持久化并可随打开或清理清除", () => {
+  const session: SessionInfo = {
+    id: "s-bg",
+    title: "后台会话",
+    cwd: "/repo/moc",
+    model: "p/m",
+    engine: "standard",
+    autonomy: "default",
+    permission: "workspace",
+    plan_active: false,
+    fast_mode: false,
+    engine_locked: false,
+    created_at_ms: 100,
+    updated_at_ms: 100,
+  };
+  useSessions.setState({ list: [session], extra: {}, draftSession: null });
+
+  const sidebar = render(
+    <TooltipProvider>
+      <WorkspaceSidebar />
+    </TooltipProvider>,
+  );
+
+  const indicator = () =>
+    sidebar
+      .getByRole("button", { name: "后台会话" })
+      .parentElement?.querySelector("[data-indicator]");
+  expect(indicator()?.getAttribute("data-indicator")).toBe("idle");
+
+  // 标为未读后显示蓝点并写入 localStorage。
+  act(() => useSessionMeta.getState().markUnread("s-bg"));
+  expect(indicator()?.getAttribute("data-indicator")).toBe("unread");
+  expect(indicator()?.className).toContain("bg-brand");
+  expect(JSON.parse(localStorage.getItem(SESSION_UNREAD_KEY) ?? "[]")).toEqual(["s-bg"]);
+
+  // 同时存在 attention 时优先橙点，attention 消除后恢复未读蓝点。
+  act(() =>
+    useTranscript.setState({
+      permissions: {
+        "s-bg": [
+          {
+            request_id: "r1",
+            session_id: "s-bg",
+            prompt_id: "p1",
+            tool_call_id: "tc1",
+            tool_name: "bash",
+            title: "allow",
+            options: [],
+          },
+        ],
+      },
+    }),
+  );
+  expect(indicator()?.getAttribute("data-indicator")).toBe("attention");
+  act(() => useTranscript.setState({ permissions: {} }));
+  expect(indicator()?.getAttribute("data-indicator")).toBe("unread");
+
+  // 打开会话后清除未读并移除空 localStorage key。
+  act(() => useSessionMeta.getState().markRead("s-bg"));
+  expect(indicator()?.getAttribute("data-indicator")).toBe("idle");
+  expect(localStorage.getItem(SESSION_UNREAD_KEY)).toBeNull();
 });

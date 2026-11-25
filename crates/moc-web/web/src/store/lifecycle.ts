@@ -5,6 +5,7 @@
 
 import { toast } from "sonner";
 import { t } from "@/lib/i18n";
+import { routeOf } from "@/lib/route";
 import { attachEntryIds, entriesToBlocks, historyDiffs } from "@/lib/transcript-model";
 import { clientListeners, rpc } from "@/protocol/client";
 import { ErrorCode, RpcError } from "@/protocol/errors";
@@ -26,6 +27,7 @@ import { useComposer } from "./composer";
 import { useConnection } from "./connection";
 import { useMcp } from "./mcp";
 import { usePrefs } from "./prefs";
+import { useSessionMeta } from "./session-meta";
 import { type DraftSession, useSessions } from "./sessions";
 import { useTabs } from "./tabs";
 import { refreshJobs, useTranscript } from "./transcript";
@@ -50,7 +52,15 @@ export function openSession(sessionId: string, options: OpenOptions = {}): Promi
     useTranscript.getState().drop("draft-session");
     useTabs.getState().close("draft-session");
   }
-  useTabs.getState().add(sessionId, options.activate ?? true);
+  const activate = options.activate ?? true;
+  useTabs.getState().add(sessionId, activate);
+  if (
+    activate &&
+    sessionId !== "draft-session" &&
+    (typeof window === "undefined" || routeOf(window.location.pathname) === "agent")
+  ) {
+    useSessionMeta.getState().markRead(sessionId);
+  }
   const pendingClose = closing.get(sessionId);
   if (pendingClose) {
     return pendingClose.then(() => {

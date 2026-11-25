@@ -922,6 +922,7 @@ export const en: Record<MsgKey, string> = {
   "sb.path_copied": "Path copied.",
   "sb.reconnecting": "Disconnected; reconnecting…",
   "sb.remove_ws": "Remove",
+  "sb.reset_order": "Reset order",
   "sb.running": "Working",
   "sb.open": "Open",
   "sb.session_actions": "Session actions",

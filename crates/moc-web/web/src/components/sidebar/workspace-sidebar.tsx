@@ -9,12 +9,13 @@ import {
   MoreHorizontalIcon,
   PencilIcon,
   PlusIcon,
+  RotateCcwIcon,
   SearchIcon,
   SquarePenIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { Fragment, type ReactNode, useMemo, useRef, useState } from "react";
+import { type DragEvent, Fragment, type ReactNode, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { IconButton } from "@/components/common/icon-button";
@@ -43,6 +44,7 @@ import { type InitializeResult, PROTOCOL_VERSION, type SessionInfo } from "@/pro
 import { useConnection } from "@/store/connection";
 import { createQuickSession, openSession, renameSession } from "@/store/lifecycle";
 import { usePrefs } from "@/store/prefs";
+import { type DropEdge, moveSessionId, useSessionMeta } from "@/store/session-meta";
 import { allSessions, groupWorkspaces, useSessions } from "@/store/sessions";
 import { useTabs } from "@/store/tabs";
 import { attentionCount, useTranscript } from "@/store/transcript";
@@ -200,6 +202,7 @@ export function WorkspaceSidebar() {
   const list = useSessions((state) => state.list);
   const extra = useSessions((state) => state.extra);
   const workspaces = usePrefs((state) => state.workspaces);
+  const orderByCwd = useSessionMeta((state) => state.orderByCwd);
   const active = useTabs((state) => state.active);
 
   const [query, setQuery] = useState("");
@@ -209,9 +212,37 @@ export function WorkspaceSidebar() {
   const [extraShown, setExtraShown] = useState<Record<string, number>>({});
   const groupHeaders = useRef<Record<string, HTMLDivElement | null>>({});
 
+  type DragSource = { cwd: string; id: string };
+  type DropTarget = { cwd: string; id: string; edge: DropEdge };
+  const dragSourceRef = useRef<DragSource | null>(null);
+  const dropTargetRef = useRef<DropTarget | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
+
+  const updateDropTarget = (next: DropTarget | null) => {
+    const prev = dropTargetRef.current;
+    if (prev?.cwd === next?.cwd && prev?.id === next?.id && prev?.edge === next?.edge) return;
+    dropTargetRef.current = next;
+    setDropTarget(next);
+  };
+
+  const clearDrag = () => {
+    dragSourceRef.current = null;
+    setDraggingId(null);
+    updateDropTarget(null);
+  };
+
+  const commitDrop = (cwd: string, groupIds: readonly string[]) => {
+    const source = dragSourceRef.current;
+    const target = dropTargetRef.current;
+    clearDrag();
+    if (!source || !target || source.cwd !== cwd || target.cwd !== cwd) return;
+    useSessionMeta.getState().reorder(cwd, groupIds, source.id, target.id, target.edge);
+  };
+
   const groups = useMemo(
-    () => groupWorkspaces(allSessions({ list, extra }), workspaces, query),
-    [list, extra, workspaces, query],
+    () => groupWorkspaces(allSessions({ list, extra }), workspaces, query, orderByCwd),
+    [list, extra, workspaces, query, orderByCwd],
   );
 
   // 正文搜索补充标题/目录匹配不到的会话；标题已命中的不重复展示。
@@ -346,6 +377,9 @@ export function WorkspaceSidebar() {
               const visible = group.sessions.slice(0, base + extraCount);
               const hidden = group.sessions.length - visible.length;
               const canCollapse = !isFolded && extraCount > 0 && visible.length > base;
+              const canDrag = !query.trim() && group.sessions.length > 1;
+              const groupIds = group.sessions.map((item) => item.id);
+              const hasCustomOrder = Boolean(orderByCwd[group.cwd]?.length);
               return (
                 <div key={group.cwd} className="mb-2">
                   <div
@@ -386,6 +420,7 @@ export function WorkspaceSidebar() {
                             cwd={group.cwd}
                             removable={workspaces.includes(group.cwd)}
                             sessionCount={group.sessions.length}
+                            hasCustomOrder={hasCustomOrder}
                           />
                         </div>
                         {canCollapse && (
@@ -402,12 +437,91 @@ export function WorkspaceSidebar() {
                   </div>
 
                   {!isFolded && (
-                    <div className="mt-0.5 space-y-0.5">
+                    /* biome-ignore lint/a11y/noStaticElementInteractions: 容器仅承接会话行间隙的原生拖放落点 */
+                    <div
+                      className="mt-0.5 space-y-0.5"
+                      onDragOver={(event) => {
+                        if (dragSourceRef.current?.cwd !== group.cwd) return;
+                        event.preventDefault();
+                        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+                      }}
+                      onDragLeave={(event) => {
+                        if (
+                          !event.currentTarget.contains(event.relatedTarget as Node | null) &&
+                          dropTargetRef.current?.cwd === group.cwd
+                        ) {
+                          updateDropTarget(null);
+                        }
+                      }}
+                      onDrop={(event) => {
+                        if (dragSourceRef.current?.cwd !== group.cwd) return;
+                        event.preventDefault();
+                        commitDrop(group.cwd, groupIds);
+                      }}
+                    >
                       {visible.map((session) => (
                         <SessionRow
                           key={session.id}
                           session={session}
                           active={session.id === active}
+                          draggable={canDrag}
+                          dragging={draggingId === session.id}
+                          dropEdge={
+                            dropTarget?.cwd === group.cwd && dropTarget.id === session.id
+                              ? dropTarget.edge
+                              : null
+                          }
+                          onDragStart={(event) => {
+                            if (!canDrag) {
+                              event.preventDefault();
+                              return;
+                            }
+                            if (
+                              event.target instanceof Element &&
+                              event.target.closest("[data-session-menu]")
+                            ) {
+                              event.preventDefault();
+                              return;
+                            }
+                            dragSourceRef.current = { cwd: group.cwd, id: session.id };
+                            setDraggingId(session.id);
+                            if (event.dataTransfer) {
+                              event.dataTransfer.effectAllowed = "move";
+                              event.dataTransfer.setData("application/x-moc-session", session.id);
+                              const rect = event.currentTarget.getBoundingClientRect();
+                              event.dataTransfer.setDragImage?.(
+                                event.currentTarget,
+                                event.clientX - rect.left,
+                                event.clientY - rect.top,
+                              );
+                            }
+                          }}
+                          onDragOver={(event) => {
+                            const source = dragSourceRef.current;
+                            if (!source || source.cwd !== group.cwd) return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+                            if (source.id === session.id) {
+                              updateDropTarget(null);
+                              return;
+                            }
+                            const rect = event.currentTarget.getBoundingClientRect();
+                            const edge: DropEdge =
+                              event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+                            if (moveSessionId(groupIds, source.id, session.id, edge)) {
+                              updateDropTarget({ cwd: group.cwd, id: session.id, edge });
+                            } else {
+                              updateDropTarget(null);
+                            }
+                          }}
+                          onDrop={(event) => {
+                            if (dragSourceRef.current?.cwd !== group.cwd) return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            commitDrop(group.cwd, groupIds);
+                          }}
+                          onDragEnd={clearDrag}
                         />
                       ))}
                       <SessionPagingRow
@@ -447,10 +561,12 @@ function WorkspaceMenu({
   cwd,
   removable,
   sessionCount,
+  hasCustomOrder,
 }: {
   cwd: string;
   removable: boolean;
   sessionCount: number;
+  hasCustomOrder: boolean;
 }) {
   const t = useT();
   return (
@@ -474,6 +590,12 @@ function WorkspaceMenu({
           <CopyIcon />
           {t("sb.copy_path")}
         </DropdownMenuItem>
+        {hasCustomOrder && (
+          <DropdownMenuItem onSelect={() => useSessionMeta.getState().resetOrder(cwd)}>
+            <RotateCcwIcon />
+            {t("sb.reset_order")}
+          </DropdownMenuItem>
+        )}
         {sessionCount > 0 ? (
           <DropdownMenuItem
             variant="destructive"
@@ -508,10 +630,31 @@ type SessionAction = {
   separated?: boolean;
 };
 
-function SessionRow({ session, active }: { session: SessionInfo; active: boolean }) {
+function SessionRow({
+  session,
+  active,
+  draggable,
+  dragging,
+  dropEdge,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+}: {
+  session: SessionInfo;
+  active: boolean;
+  draggable: boolean;
+  dragging: boolean;
+  dropEdge: DropEdge | null;
+  onDragStart: (event: DragEvent<HTMLDivElement>) => void;
+  onDragOver: (event: DragEvent<HTMLDivElement>) => void;
+  onDrop: (event: DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
+}) {
   const t = useT();
   const running = useTranscript((state) => Boolean(state.activity[session.id]?.running));
   const attention = useTranscript((state) => attentionCount(state, session.id) > 0);
+  const unread = useSessionMeta((state) => Boolean(state.unread[session.id]));
   const [renaming, setRenaming] = useState<string | null>(null);
   const renamingFromMenu = useRef(false);
   const sessionButton = useRef<HTMLButtonElement>(null);
@@ -606,15 +749,32 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: 行内按钮负责点击与键盘焦点，外层仅承接原生拖放排序 */}
         <div
+          draggable={draggable}
+          onDragStart={onDragStart}
+          onDragOver={onDragOver}
+          onDrop={onDrop}
+          onDragEnd={onDragEnd}
           className={cn(
             "group/session relative flex h-11 w-full items-center gap-2.5 rounded-lg pr-1.5 pl-3 transition-colors data-[state=open]:bg-sidebar-accent has-[[data-state=open]]:bg-sidebar-accent",
             active ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/70",
+            dragging && "opacity-45",
           )}
         >
+          {dropEdge && (
+            <span
+              aria-hidden="true"
+              className={cn(
+                "pointer-events-none absolute inset-x-2 z-20 h-0.5 rounded-full bg-brand",
+                dropEdge === "before" ? "-top-px" : "-bottom-px",
+              )}
+            />
+          )}
           <button
             ref={sessionButton}
             type="button"
+            draggable={draggable}
             onClick={() => void openSession(session.id).catch(() => undefined)}
             onDoubleClick={() => setRenaming(title)}
             className="absolute inset-0 rounded-lg"
@@ -630,9 +790,14 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
               <span className="size-2.5 rounded-full border border-text-tertiary/40 border-t-foreground motion-safe:animate-spin" />
             ) : (
               <span
+                data-indicator={attention ? "attention" : unread ? "unread" : "idle"}
                 className={cn(
                   "rounded-full",
-                  attention ? "size-1.5 bg-warn" : "size-1 bg-text-tertiary/50",
+                  attention
+                    ? "size-1.5 bg-warn"
+                    : unread
+                      ? "size-1.5 bg-brand"
+                      : "size-1 bg-text-tertiary/50",
                 )}
               />
             )}
@@ -652,13 +817,17 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
               {status}
             </span>
           </span>
-          <div className="pointer-events-none absolute top-0.5 right-1.5 opacity-0 transition-opacity group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100 group-has-[[data-state=open]]/session:pointer-events-auto group-has-[[data-state=open]]/session:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100">
+          <div
+            data-session-menu
+            className="pointer-events-none absolute top-0.5 right-1.5 opacity-0 transition-opacity group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100 group-has-[[data-state=open]]/session:pointer-events-auto group-has-[[data-state=open]]/session:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100"
+          >
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
+                  draggable={false}
                   aria-label={t("sb.session_actions")}
-                  className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                  className="flex size-6 items-center justify-center text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:text-foreground focus-visible:outline-none data-[state=open]:text-foreground"
                 >
                   <MoreHorizontalIcon className="size-4" />
                 </button>

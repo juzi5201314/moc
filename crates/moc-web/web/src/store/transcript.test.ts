@@ -24,6 +24,7 @@ import { rpc } from "@/protocol/client";
 import { ErrorCode, RpcError } from "@/protocol/errors";
 import { hasOwnPrompt, reanswerAsk, retrySession, sendPrompt } from "./actions";
 import { closeSession, loadOlder, openSession, reloadReadOnly } from "./lifecycle";
+import { SESSION_UNREAD_KEY, useSessionMeta } from "./session-meta";
 import { useTabs } from "./tabs";
 import { useTranscript } from "./transcript";
 import { useTurn, useTurnIds } from "./turns";
@@ -158,6 +159,8 @@ describe("提示失败收尾", () => {
 afterEach(() => {
   useTranscript.getState().interruptAll();
   useTranscript.setState({ bySession: {}, activity: {}, permissions: {}, asks: {} });
+  localStorage.removeItem(SESSION_UNREAD_KEY);
+  useSessionMeta.setState({ orderByCwd: {}, unread: {} });
   vi.useRealTimers();
 });
 
@@ -361,5 +364,43 @@ it("上下文事件合并重读：在途期间的多次事件只补读一次，�
   } finally {
     cancelViewReads(info.id);
     call.mockReset();
+  }
+});
+
+it("后台会话停止后标记未读，当前查看会话不标未读，切回打开后清除", async () => {
+  const finished: SessionUpdate = {
+    type: "prompt_finished",
+    prompt_id: "p",
+    message: { role: "Assistant", content: [] },
+    finish_reason: "Stop",
+    usage: { input_tokens: 0, output_tokens: 0 },
+  };
+  useTranscript.getState().ensureView(info);
+
+  // 当前正停留在 info 会话，工作结束不标未读。
+  useTabs.setState({ open: [info.id, "other"], active: info.id });
+  send({ type: "prompt_started", prompt_id: "p", model: "m", at_ms: 1 });
+  send(finished);
+  expect(useSessionMeta.getState().unread[info.id]).toBeUndefined();
+
+  // 切走看其他会话时工作结束，标为未读；点击打开后清除。
+  useTabs.setState({ open: [info.id, "other"], active: "other" });
+  send({ type: "prompt_started", prompt_id: "p2", model: "m", at_ms: 2 });
+  send(finished);
+  expect(useSessionMeta.getState().unread[info.id]).toBe(true);
+  await openSession(info.id);
+  expect(useSessionMeta.getState().unread[info.id]).toBeUndefined();
+
+  // 停在 Image Playground 路由时即使 active 仍是该会话，停止后也标为未读。
+  window.history.pushState(null, "", "/image-playground");
+  try {
+    send({ type: "prompt_started", prompt_id: "p3", model: "m", at_ms: 3 });
+    send(finished);
+    expect(useSessionMeta.getState().unread[info.id]).toBe(true);
+    // 重新开始工作时清除旧未读。
+    send({ type: "prompt_started", prompt_id: "p4", model: "m", at_ms: 4 });
+    expect(useSessionMeta.getState().unread[info.id]).toBeUndefined();
+  } finally {
+    window.history.pushState(null, "", "/");
   }
 });

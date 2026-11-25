@@ -10,6 +10,7 @@ import type {
   SessionListResult,
   SessionPermission,
 } from "@/protocol/types";
+import { applySessionOrder, useSessionMeta } from "./session-meta";
 
 /** 本地草稿会话的参数；权限默认沿用上次记忆（初始 `full`），不存在 Default 态。 */
 export type DraftSession = {
@@ -55,6 +56,15 @@ export const useSessions = create<SessionsState>()((set, get) => ({
     const listed = new Set(result.sessions.map((session) => session.id));
     const extra = Object.fromEntries(Object.entries(get().extra).filter(([id]) => !listed.has(id)));
     set({ list: result.sessions, extra });
+    // 以服务端全量列表 + 本地尚未落盘的 extra 为权威存活集，自动清理陈旧排序与未读记录。
+    const liveIds = new Set<string>();
+    const liveCwdById = new Map<string, string>();
+    for (const session of [...Object.values(extra), ...result.sessions]) {
+      if (session.parent_session_id) continue;
+      liveIds.add(session.id);
+      liveCwdById.set(session.id, session.cwd);
+    }
+    useSessionMeta.getState().prune(liveIds, liveCwdById);
   },
 
   upsert: (info) => {
@@ -71,6 +81,7 @@ export const useSessions = create<SessionsState>()((set, get) => ({
     const { list, extra } = get();
     const { [id]: _removed, ...rest } = extra;
     set({ list: list.filter((session) => session.id !== id), extra: rest });
+    useSessionMeta.getState().removeSession(id);
   },
 
   setDraftSession: (draft) => set({ draftSession: draft }),
@@ -91,6 +102,7 @@ export function groupWorkspaces(
   sessions: SessionInfo[],
   extraDirs: string[],
   query = "",
+  orderByCwd: Record<string, string[]> = {},
 ): Workspace[] {
   const needle = query.trim().toLowerCase();
   const groups = new Map<string, Workspace>();
@@ -116,6 +128,13 @@ export function groupWorkspaces(
     const group = ensure(session.cwd);
     group.sessions.push(session);
     group.updatedAt = Math.max(group.updatedAt, session.updated_at_ms);
+  }
+
+  for (const group of groups.values()) {
+    const order = orderByCwd[group.cwd];
+    if (order && order.length > 0 && group.sessions.length > 1) {
+      group.sessions = applySessionOrder(group.sessions, order);
+    }
   }
 
   return [...groups.values()]

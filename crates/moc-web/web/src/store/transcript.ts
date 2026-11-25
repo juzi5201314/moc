@@ -7,6 +7,7 @@ import { enablePatches, produceWithPatches } from "immer";
 import { create } from "zustand";
 import { recordBlockChange } from "@/lib/block-changes";
 import { t } from "@/lib/i18n";
+import { routeOf } from "@/lib/route";
 import {
   appendLocalStatus,
   appendLocalUser,
@@ -31,7 +32,9 @@ import type {
   SessionUpdateParams,
 } from "@/protocol/types";
 import { usePrefs } from "./prefs";
+import { useSessionMeta } from "./session-meta";
 import { useSessions } from "./sessions";
+import { useTabs } from "./tabs";
 import { cancelAllViewReads, cancelViewReads, startViewReads, viewReadSignal } from "./view-reads";
 
 export type Activity = { running: boolean };
@@ -134,6 +137,10 @@ export const useTranscript = create<TranscriptState>()((set) => ({
   },
   failPrompt: (sessionId) => {
     flushDeltas();
+    const prev = useTranscript.getState();
+    const wasRunning = Boolean(
+      prev.activity[sessionId]?.running || prev.bySession[sessionId]?.running,
+    );
     set(
       withBlockChanges((state: TranscriptState) => {
         delete state.activity[sessionId];
@@ -152,6 +159,9 @@ export const useTranscript = create<TranscriptState>()((set) => ({
         }
       }),
     );
+    if (wasRunning && shouldMarkUnread(sessionId)) {
+      useSessionMeta.getState().markUnread(sessionId);
+    }
   },
   interruptAll: () => {
     cancelAllViewReads();
@@ -237,6 +247,19 @@ function sessionCwd(sessionId: string): string | undefined {
   return sessions.extra[sessionId]?.cwd ?? sessions.list.find((item) => item.id === sessionId)?.cwd;
 }
 
+/** 仅对顶层会话且用户当前未停留在其会话视图时标未读（子代理不进侧栏）。 */
+function shouldMarkUnread(sessionId: string): boolean {
+  if (!sessionId || sessionId === "draft-session") return false;
+  const openParent = useTranscript.getState().bySession[sessionId]?.info.parent_session_id;
+  if (openParent) return false;
+  const sessions = useSessions.getState();
+  const known = sessions.extra[sessionId] ?? sessions.list.find((item) => item.id === sessionId);
+  if (known?.parent_session_id) return false;
+  const inAgentView =
+    typeof window === "undefined" || routeOf(window.location.pathname) === "agent";
+  return !(inAgentView && useTabs.getState().active === sessionId);
+}
+
 rpc.on("session/update", (params: SessionUpdateParams) => {
   const { session_id: sessionId, update } = params;
   // Agent 或手动命令执行 bash/execute/子代理/后台任务后可能已切换分支，立即失效并重查。
@@ -275,6 +298,11 @@ rpc.on("session/update", (params: SessionUpdateParams) => {
       if (view) applyUpdate(view, update);
     }),
   );
+  if (update.type === "prompt_started") {
+    useSessionMeta.getState().markRead(sessionId);
+  } else if (update.type === "prompt_finished" && shouldMarkUnread(sessionId)) {
+    useSessionMeta.getState().markUnread(sessionId);
+  }
   if (
     CONTEXT_EVENTS.has(update.type) ||
     (update.type === "assistant_delta" && update.delta.type === "usage")

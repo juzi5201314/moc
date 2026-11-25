@@ -902,6 +902,7 @@ export const zh = {
   "sb.path_copied": "已复制路径。",
   "sb.reconnecting": "连接已断开，正在重连…",
   "sb.remove_ws": "Remove",
+  "sb.reset_order": "Reset order",
   "sb.running": "Working",
   "sb.open": "Open",
   "sb.session_actions": "Session actions",
