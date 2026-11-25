@@ -14,13 +14,15 @@ use parking_lot::Mutex;
 use rmcp::ClientServiceExt;
 use rmcp::handler::client::ClientHandler;
 use rmcp::model::{
-    ClientCapabilities, ClientConfig, ElicitationCapability, FormElicitationCapability,
-    Implementation, ProtocolVersion, UrlElicitationCapability,
+    ClientCapabilities, ClientConfig, ClientJsonRpcMessage, ElicitationCapability,
+    FormElicitationCapability, Implementation, ProtocolVersion, UrlElicitationCapability,
 };
 use rmcp::service::{ClientLifecycleMode, NotificationContext, RoleClient, RunningService};
 use rmcp::transport::TokioChildProcess;
+use rmcp::transport::common::client_side_sse::BoxedSseResponse;
 use rmcp::transport::streamable_http_client::{
-    StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
+    StreamableHttpClient, StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
+    StreamableHttpError, StreamableHttpPostResponse,
 };
 use tokio::sync::mpsc;
 
@@ -416,6 +418,123 @@ async fn drain_stderr(
     }
 }
 
+/// 包装 `reqwest::Client`，兼容部分 Streamable HTTP 服务端在会话删除时返回非标准状态码：
+/// 规范要求不支持 `DELETE` 时回 `405 Method Not Allowed`，但部分实现（如将空请求体 `DELETE`
+/// 直接送入 JSON-RPC 解析器的服务端）会返回 `400 Bad Request` 或 `501 Not Implemented`，
+/// 会话已过期时返回 `404 Not Found`。其余错误（鉴权失败、5xx、网络异常等）保持原样上报。
+#[derive(Clone)]
+struct McpHttpClient(reqwest::Client);
+
+impl StreamableHttpClient for McpHttpClient {
+    type Error = reqwest::Error;
+
+    async fn post_message(
+        &self,
+        uri: Arc<str>,
+        message: ClientJsonRpcMessage,
+        session_id: Option<Arc<str>>,
+        auth_header: Option<String>,
+        custom_headers: HashMap<http::HeaderName, http::HeaderValue>,
+    ) -> Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
+        self.0
+            .post_message(uri, message, session_id, auth_header, custom_headers)
+            .await
+    }
+
+    async fn post_message_with_max_sse_event_size(
+        &self,
+        uri: Arc<str>,
+        message: ClientJsonRpcMessage,
+        session_id: Option<Arc<str>>,
+        auth_header: Option<String>,
+        custom_headers: HashMap<http::HeaderName, http::HeaderValue>,
+        max_sse_event_size: usize,
+    ) -> Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
+        self.0
+            .post_message_with_max_sse_event_size(
+                uri,
+                message,
+                session_id,
+                auth_header,
+                custom_headers,
+                max_sse_event_size,
+            )
+            .await
+    }
+
+    async fn delete_session(
+        &self,
+        uri: Arc<str>,
+        session_id: Arc<str>,
+        auth_header: Option<String>,
+        custom_headers: HashMap<http::HeaderName, http::HeaderValue>,
+    ) -> Result<(), StreamableHttpError<Self::Error>> {
+        match self
+            .0
+            .delete_session(uri.clone(), session_id.clone(), auth_header, custom_headers)
+            .await
+        {
+            Err(StreamableHttpError::Client(error)) => match error.status() {
+                Some(reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::NOT_IMPLEMENTED) => {
+                    tracing::debug!(
+                        target: "moc_mcp",
+                        uri = uri.as_ref(),
+                        session_id = session_id.as_ref(),
+                        status = ?error.status(),
+                        "MCP 服务端未按 405 响应会话删除，视为不支持 delete session"
+                    );
+                    Err(StreamableHttpError::ServerDoesNotSupportDeleteSession)
+                }
+                Some(reqwest::StatusCode::NOT_FOUND) => {
+                    tracing::debug!(
+                        target: "moc_mcp",
+                        uri = uri.as_ref(),
+                        session_id = session_id.as_ref(),
+                        "MCP 会话在服务端已过期（404），无需重复删除"
+                    );
+                    Ok(())
+                }
+                _ => Err(StreamableHttpError::Client(error)),
+            },
+            other => other,
+        }
+    }
+
+    async fn get_stream(
+        &self,
+        uri: Arc<str>,
+        session_id: Option<Arc<str>>,
+        last_event_id: Option<String>,
+        auth_header: Option<String>,
+        custom_headers: HashMap<http::HeaderName, http::HeaderValue>,
+    ) -> Result<BoxedSseResponse, StreamableHttpError<Self::Error>> {
+        self.0
+            .get_stream(uri, session_id, last_event_id, auth_header, custom_headers)
+            .await
+    }
+
+    async fn get_stream_with_max_sse_event_size(
+        &self,
+        uri: Arc<str>,
+        session_id: Option<Arc<str>>,
+        last_event_id: Option<String>,
+        auth_header: Option<String>,
+        custom_headers: HashMap<http::HeaderName, http::HeaderValue>,
+        max_sse_event_size: usize,
+    ) -> Result<BoxedSseResponse, StreamableHttpError<Self::Error>> {
+        self.0
+            .get_stream_with_max_sse_event_size(
+                uri,
+                session_id,
+                last_event_id,
+                auth_header,
+                custom_headers,
+                max_sse_event_size,
+            )
+            .await
+    }
+}
+
 async fn connect_http(
     server: &str,
     url: &str,
@@ -439,7 +558,7 @@ async fn connect_http(
     }
     let mut config = StreamableHttpClientTransportConfig::with_uri(url.to_owned());
     config.custom_headers = custom_headers;
-    let transport = StreamableHttpClientTransport::with_client(client, config);
+    let transport = StreamableHttpClientTransport::with_client(McpHttpClient(client), config);
     let handler = ClientHandlerBridge::new(tool_list_changed);
     serve_bridge(server, handler, transport).await
 }
@@ -600,5 +719,75 @@ mod tests {
         drain_stderr(&mut reader, "test", None).await;
 
         assert_eq!(reader.position(), reader.get_ref().len() as u64);
+    }
+
+    async fn serve_delete_status(status_line: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 512];
+            while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = socket.read(&mut chunk).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            let response = format!(
+                "HTTP/1.1 {status_line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.shutdown().await;
+        });
+        format!("http://{addr}/mcp")
+    }
+
+    #[tokio::test]
+    async fn delete_session_maps_nonstandard_status_codes() {
+        use super::{McpHttpClient, StreamableHttpClient, StreamableHttpError};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let client = McpHttpClient(reqwest::Client::builder().no_proxy().build().unwrap());
+        let sid: Arc<str> = Arc::from("session-1");
+
+        for status in ["400 Bad Request", "501 Not Implemented"] {
+            let uri: Arc<str> = Arc::from(serve_delete_status(status).await);
+            let result = client
+                .delete_session(uri, Arc::clone(&sid), None, HashMap::new())
+                .await;
+            assert!(
+                matches!(
+                    result,
+                    Err(StreamableHttpError::ServerDoesNotSupportDeleteSession)
+                ),
+                "expected ServerDoesNotSupportDeleteSession for {status}, got {result:?}"
+            );
+        }
+
+        for status in ["404 Not Found", "405 Method Not Allowed", "204 No Content"] {
+            let uri: Arc<str> = Arc::from(serve_delete_status(status).await);
+            client
+                .delete_session(uri, Arc::clone(&sid), None, HashMap::new())
+                .await
+                .unwrap_or_else(|err| panic!("expected Ok for {status}, got {err:?}"));
+        }
+
+        let uri: Arc<str> = Arc::from(serve_delete_status("500 Internal Server Error").await);
+        let result = client
+            .delete_session(uri, sid, None, HashMap::new())
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(StreamableHttpError::Client(ref err))
+                    if err.status() == Some(reqwest::StatusCode::INTERNAL_SERVER_ERROR)
+            ),
+            "500 应保留原始错误，实际为 {result:?}"
+        );
     }
 }
