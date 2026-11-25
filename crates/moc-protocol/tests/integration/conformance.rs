@@ -263,11 +263,27 @@ async fn chart_and_workspace_methods_validate_params_before_service_dispatch() {
 
     peer.send(&request(
         4,
+        "workspace/git_branches",
+        json!({ "cwd": "/tmp" }),
+    ))
+    .await;
+    assert_eq!(peer.recv_err(4).await, RpcErrorCode::NotSupported.code());
+
+    peer.send(&request(
+        5,
+        "workspace/git_switch",
+        json!({ "cwd": "/tmp", "branch": "main" }),
+    ))
+    .await;
+    assert_eq!(peer.recv_err(5).await, RpcErrorCode::NotSupported.code());
+
+    peer.send(&request(
+        6,
         "chart/analyze",
         json!({ "header": [], "rows": [], "unknown": true }),
     ))
     .await;
-    assert_eq!(peer.recv_err(4).await, RpcErrorCode::InvalidParams.code());
+    assert_eq!(peer.recv_err(6).await, RpcErrorCode::InvalidParams.code());
     assert!(service.calls().is_empty());
 }
 

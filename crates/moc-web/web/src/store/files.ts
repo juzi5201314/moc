@@ -785,6 +785,52 @@ function noteRefresh(sessionId: string): void {
   );
 }
 
+function isSameOrWithinPath(path: string, root: string): boolean {
+  const a = path.replace(/[\\/]+$/, "");
+  const b = root.replace(/[\\/]+$/, "");
+  return a === b || a.startsWith(`${b}/`) || a.startsWith(`${b}\\`);
+}
+
+/** 列出指定 Git 仓库内所有已打开会话中尚未保存的编辑器文件（相对仓库路径）。 */
+export function dirtyEditorFilesForRepo(cwd: string, repoRoot?: string | null): string[] {
+  const scope = (repoRoot || cwd).replace(/[\\/]+$/, "");
+  if (!scope) return [];
+  const seen = new Set<string>();
+  const dirty: string[] = [];
+  for (const files of Object.values(useFiles.getState().bySession)) {
+    for (const tab of files.tabs) {
+      if (tab.target.kind !== "fs") continue;
+      if (tab.draft === undefined || tab.draft === tab.content) continue;
+      if (!isSameOrWithinPath(tab.target.path, scope)) continue;
+      if (seen.has(tab.target.path)) continue;
+      seen.add(tab.target.path);
+      const prefix = `${scope}/`;
+      const altPrefix = `${scope}\\`;
+      dirty.push(
+        tab.target.path.startsWith(prefix) || tab.target.path.startsWith(altPrefix)
+          ? tab.target.path.slice(prefix.length)
+          : tab.target.path,
+      );
+    }
+  }
+  return dirty;
+}
+
+/** 分支切换后刷新同仓库全部已打开会话的目录树并触发打开文件的 mtime 探测。 */
+export function refreshRepoFiles(cwd: string, repoRoot?: string | null): void {
+  const scope = repoRoot || cwd;
+  if (!scope) return;
+  for (const [sessionId, view] of Object.entries(useTranscript.getState().bySession)) {
+    const sessionCwd = view?.info.cwd;
+    if (!sessionCwd || !isSameOrWithinPath(sessionCwd, scope)) continue;
+    const files = session(useFiles.getState(), sessionId);
+    if (files.root === "workspace") {
+      refreshExpanded(sessionId, { kind: "workspace", cwd: sessionCwd });
+    }
+    noteExternalChange(sessionId);
+  }
+}
+
 rpc.on("session/update", ({ session_id: sessionId, update }: SessionUpdateParams) => {
   if (
     update.type === "job_finished" ||

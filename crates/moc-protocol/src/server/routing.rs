@@ -82,6 +82,8 @@ use crate::methods::SkillsCompact;
 use crate::methods::WebStateGet;
 use crate::methods::WebStateSave;
 use crate::methods::WorkspaceGitBranch;
+use crate::methods::WorkspaceGitBranches;
+use crate::methods::WorkspaceGitSwitch;
 use crate::service::AgentService;
 use serde_json::Value;
 use std::sync::Arc;
@@ -325,6 +327,24 @@ impl<S: AgentService> ServerDispatch<S> {
                     self.server
                         .service
                         .workspace_git_branch(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <WorkspaceGitBranches as Method>::NAME => {
+                let params = params_from_value::<WorkspaceGitBranches>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .workspace_git_branches(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <WorkspaceGitSwitch as Method>::NAME => {
+                let params = params_from_value::<WorkspaceGitSwitch>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .workspace_git_switch(self.context(client, cancel), params)
                         .await?,
                 )
             }

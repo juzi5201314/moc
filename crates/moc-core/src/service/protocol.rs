@@ -2,7 +2,7 @@
 
 use super::errors::{invalid_params, job_error, to_rpc, write_lease_error};
 use super::{
-    Core, bash, btw, config_api, context, debug_info, export, history, inspect, management,
+    Core, bash, btw, config_api, context, debug_info, export, git, history, inspect, management,
     mcp_api, mode, plugin_api, prompt, resource_api, session_api, session_config, usage,
     workflow_api,
 };
@@ -32,10 +32,12 @@ use moc_protocol::methods::{
     SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUsageParams,
     SessionUsageResult, UnsteerParams, UnsteerResult, WebStateDocument, WebStateGetParams,
     WebStateSaveParams, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
+    WorkspaceGitBranchesParams, WorkspaceGitBranchesResult, WorkspaceGitSwitchParams,
+    WorkspaceGitSwitchResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use serde_json::json;
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 
 impl AgentService for Core {
     async fn initialize(
@@ -476,17 +478,23 @@ impl AgentService for Core {
         _ctx: RequestContext,
         params: WorkspaceGitBranchParams,
     ) -> Result<WorkspaceGitBranchResult, RpcError> {
-        let output = tokio::process::Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(Path::new(&params.cwd))
-            .output()
-            .await
-            .ok();
-        let branch = output
-            .filter(|result| result.status.success())
-            .map(|result| String::from_utf8_lossy(&result.stdout).trim().to_owned())
-            .filter(|branch| !branch.is_empty());
-        Ok(WorkspaceGitBranchResult { branch })
+        Ok(git::git_branch(&params.cwd).await)
+    }
+
+    async fn workspace_git_branches(
+        &self,
+        _ctx: RequestContext,
+        params: WorkspaceGitBranchesParams,
+    ) -> Result<WorkspaceGitBranchesResult, RpcError> {
+        Ok(git::git_branches(&self.inner, &params.cwd).await)
+    }
+
+    async fn workspace_git_switch(
+        &self,
+        _ctx: RequestContext,
+        params: WorkspaceGitSwitchParams,
+    ) -> Result<WorkspaceGitSwitchResult, RpcError> {
+        Ok(git::git_switch(&self.inner, params).await)
     }
 
     async fn session_new(

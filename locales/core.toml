@@ -1497,3 +1497,25 @@ offset_oob = { zh = "历史块偏移越界", en = "History chunk offset out of b
 offset_utf8 = { zh = "历史块偏移必须位于 UTF-8 字符边界", en = "History chunk offset must lie on a UTF-8 character boundary" }
 busy = { zh = "历史传输繁忙，请在当前读取完成后重试", en = "History transfer busy; retry after the current read finishes" }
 cancelled = { zh = "历史读取已取消", en = "History read cancelled" }
+
+[core.git]
+not_a_repo = { zh = "当前目录不在 Git 仓库中", en = "Current directory is not inside a Git repository" }
+busy_sessions = { zh = "同仓库有正在运行的会话或后台任务，请等待完成或中止后再切换分支", en = "Active sessions or background jobs are running in this repository; wait for them or stop them before switching branches" }
+op_merge = { zh = "merge", en = "merge" }
+op_rebase = { zh = "rebase", en = "rebase" }
+op_cherry_pick = { zh = "cherry-pick", en = "cherry-pick" }
+op_revert = { zh = "revert", en = "revert" }
+op_bisect = { zh = "bisect", en = "bisect" }
+operation_in_progress = { zh = "仓库正处于 %{op} 进行中，请先完成或中止该操作后再切换分支", en = "Repository has a %{op} in progress; finish or abort it before switching branches" }
+unresolved_conflicts = { zh = "工作区存在 %{n} 个未解决的合并冲突，请先解决后再切换分支", en = "Working tree has %{n} unresolved merge conflict(s); resolve them before switching branches" }
+worktree_in_use = { zh = "分支 `%{branch}` 已在其他 worktree（%{path}）中检出", en = "Branch `%{branch}` is already checked out in another worktree (%{path})" }
+invalid_branch_name = { zh = "分支名 `%{branch}` 不符合 Git 命名规范", en = "Branch name `%{branch}` is not a valid Git branch name" }
+branch_exists = { zh = "本地分支 `%{branch}` 已存在", en = "Local branch `%{branch}` already exists" }
+branch_not_found = { zh = "找不到分支 `%{branch}`", en = "Branch `%{branch}` not found" }
+unborn_repo = { zh = "仓库尚无任何提交，暂无其他分支可切换", en = "Repository has no commits yet; no other branch is available to switch to" }
+lock_file = { zh = "Git 索引锁文件正被其他进程占用，请稍后重试", en = "Git index lock is held by another process; try again shortly" }
+stash_failed = { zh = "暂存本地更改失败：%{error}", en = "Failed to stash local changes: %{error}" }
+switch_failed = { zh = "切换分支失败：%{error}", en = "Failed to switch branch: %{error}" }
+switch_failed_restored = { zh = "切换分支失败（已自动恢复暂存的本地更改）：%{error}", en = "Failed to switch branch (stashed changes were restored): %{error}" }
+switch_failed_stashed = { zh = "切换分支失败：%{error}。本地更改已安全保存在 git stash（%{stash}）中", en = "Failed to switch branch: %{error}. Local changes remain safely saved in git stash (%{stash})" }
+timeout = { zh = "Git 命令执行超时", en = "Git command timed out" }

@@ -3,7 +3,6 @@
 import {
   CopyIcon,
   FolderIcon,
-  GitBranchIcon,
   ListTodoIcon,
   LockIcon,
   MoreHorizontalIcon,
@@ -26,13 +25,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useT } from "@/lib/i18n";
-import { useGitBranch } from "@/lib/use-git-branch";
 import { useNarrow } from "@/lib/use-narrow";
 import { useLayout } from "@/store/layout";
 import { createQuickSession, reacquire, releaseSession, renameSession } from "@/store/lifecycle";
 import { workspaceName } from "@/store/sessions";
 import { attentionCount, useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
+import { GitBranchPicker } from "./git-branch-picker";
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -81,7 +80,6 @@ export function InspectorToggle({ sessionId }: { sessionId: string }) {
 export function SessionHeader({ sessionId }: { sessionId: string }) {
   const t = useT();
   const view = useTranscript((state) => state.bySession[sessionId]);
-  const branch = useGitBranch(view?.info.cwd);
   const [editing, setEditing] = useState<string | null>(null);
   const renamingFromMenu = useRef(false);
   const titleButton = useRef<HTMLButtonElement>(null);
@@ -142,12 +140,18 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
             <FolderIcon className="size-3.5 shrink-0" />
             <span className="max-w-[160px] truncate">{workspaceName(view.info.cwd)}</span>
           </span>
-          {branch && (
-            <span className="flex min-w-0 items-center gap-1" title={t("hd.branch", { branch })}>
-              <GitBranchIcon className="size-3.5 shrink-0" />
-              <span className="max-w-[160px] truncate font-mono text-xs">{branch}</span>
-            </span>
-          )}
+          <GitBranchPicker
+            cwd={view.info.cwd}
+            variant="header"
+            disabled={view.running || view.readOnly}
+            disabledReason={
+              view.running
+                ? t("git.disabled_running")
+                : view.readOnly
+                  ? t("git.disabled_readonly")
+                  : undefined
+            }
+          />
         </div>
 
         {view.readOnly && (

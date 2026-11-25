@@ -188,6 +188,8 @@ fn register_all(
     client::<SessionWorkflowArtifact>(generator, client_map);
     // workspace.rs
     client::<WorkspaceGitBranch>(generator, client_map);
+    client::<WorkspaceGitBranches>(generator, client_map);
+    client::<WorkspaceGitSwitch>(generator, client_map);
 }
 
 // ---------- 源码预处理（独立扫描器，与注册表/schema 双向核对） ----------

@@ -25,7 +25,7 @@
 //! | [`prompt::SessionCancel`] | C→S | 协议层自答 | 已初始化 | — |
 //! | [`resources::ResourceComplete`] / [`resources::ResourceInspect`] / [`resources::ResourceList`] / [`resources::ResourceRead`] | C→S | core | 已初始化 | `-32602` / `-32010` |
 //! | [`fs::FsListDir`] / [`fs::FsCreateDir`] / [`fs::FsReadFile`] / [`fs::FsWriteFile`] / [`fs::FsCreateFile`] / [`fs::FsRename`] / [`fs::FsDelete`] / [`chart::ChartAnalyze`] | C→S | core | 已初始化 | `-32602` / `-32014` / `-32016` |
-//! | [`workspace::WorkspaceGitBranch`] | C→S | core | 已初始化 | `-32602` |
+//! | [`workspace::WorkspaceGitBranch`] / [`workspace::WorkspaceGitBranches`] / [`workspace::WorkspaceGitSwitch`] | C→S | core | 已初始化 | `-32602` |
 //! | [`web::WebStateGet`] / [`web::WebStateSave`] | C→S | core | 已初始化 | `-32602` / `-32014` |
 //! | [`update::SessionUpdateMethod`] / [`update::BtwUpdateMethod`] | S→C | 前端 | — | — |
 //! | [`web::WebStateUpdated`] | S→C | 前端 | — | — |
@@ -182,7 +182,12 @@ pub use workflow::{
     WorkflowEvent, WorkflowPhaseState, WorkflowRoleState, WorkflowRunSnapshot, WorkflowRunStatus,
     WorkflowRunSummary, WorkflowStopReason,
 };
-pub use workspace::{WorkspaceGitBranch, WorkspaceGitBranchParams, WorkspaceGitBranchResult};
+pub use workspace::{
+    GitBranchEntry, GitOperation, GitRemoteBranchEntry, GitSwitchBlockReason, GitSwitchDirtyPolicy,
+    GitWorktreeStatus, WorkspaceGitBranch, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
+    WorkspaceGitBranches, WorkspaceGitBranchesParams, WorkspaceGitBranchesResult,
+    WorkspaceGitSwitch, WorkspaceGitSwitchParams, WorkspaceGitSwitchResult,
+};
 
 /// 空结果：序列化为 `{}`。
 ///
@@ -275,6 +280,11 @@ mod tests {
             (<FsDelete as Method>::NAME, "fs/delete"),
             (<ChartAnalyze as Method>::NAME, "chart/analyze"),
             (<WorkspaceGitBranch as Method>::NAME, "workspace/git_branch"),
+            (
+                <WorkspaceGitBranches as Method>::NAME,
+                "workspace/git_branches",
+            ),
+            (<WorkspaceGitSwitch as Method>::NAME, "workspace/git_switch"),
             (<WebStateGet as Method>::NAME, "web/state"),
             (<WebStateSave as Method>::NAME, "web/state_save"),
             (<AgentList as Method>::NAME, "agent/list"),
@@ -350,6 +360,8 @@ mod tests {
         server_notification::<McpStatusUpdated>();
         client::<ChartAnalyze>();
         client::<WorkspaceGitBranch>();
+        client::<WorkspaceGitBranches>();
+        client::<WorkspaceGitSwitch>();
         assert_eq!(Empty {}, Empty::default());
     }
 }

@@ -170,6 +170,15 @@ impl SessionTable {
         }
         self.store.clear_history_views();
     }
+
+    /// 返回当前已加载到内存中的全部会话记录快照，用于同仓库并发检查与切分支同步。
+    pub(crate) fn loaded_records(&self) -> Vec<(String, Arc<SessionRecord>)> {
+        self.records
+            .read()
+            .iter()
+            .map(|(id, record)| (id.clone(), Arc::clone(record)))
+            .collect()
+    }
 }
 
 fn validate_plugin_state_component(value: &str, label: &str) -> Result<(), CoreError> {

@@ -2446,6 +2446,153 @@
       ],
       "type": "object"
     },
+    "GitBranchEntry": {
+      "additionalProperties": false,
+      "description": "本地分支条目。",
+      "properties": {
+        "current": {
+          "description": "是否为当前 worktree 正在检出的分支。",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "本地分支短名（如 `master`、`feat/git-switch`）。",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "关联的上游分支短名（如 `origin/master`）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktree_path": {
+          "description": "若已被其他 git worktree 检出，返回该 worktree 的路径；当前 worktree 为 `None`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "current"
+      ],
+      "type": "object"
+    },
+    "GitOperation": {
+      "description": "仓库正在进行中的多步 Git 操作。",
+      "enum": [
+        "merge",
+        "rebase",
+        "cherry_pick",
+        "revert",
+        "bisect"
+      ],
+      "type": "string"
+    },
+    "GitRemoteBranchEntry": {
+      "additionalProperties": false,
+      "description": "远程跟踪分支条目。",
+      "properties": {
+        "branch": {
+          "description": "去掉远程前缀后的分支名（如 `feat-x`）。",
+          "type": "string"
+        },
+        "has_local": {
+          "description": "本地是否已存在同名分支。",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "远程引用短名（如 `origin/feat-x`）。",
+          "type": "string"
+        },
+        "remote": {
+          "description": "远程名（如 `origin`）。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "remote",
+        "branch",
+        "has_local"
+      ],
+      "type": "object"
+    },
+    "GitSwitchBlockReason": {
+      "description": "切换分支被硬阻断的原因分类。",
+      "enum": [
+        "not_a_repo",
+        "busy_sessions",
+        "operation_in_progress",
+        "unresolved_conflicts",
+        "worktree_in_use",
+        "invalid_branch_name",
+        "branch_exists",
+        "branch_not_found",
+        "unborn_repo",
+        "lock_file",
+        "git_failed"
+      ],
+      "type": "string"
+    },
+    "GitSwitchDirtyPolicy": {
+      "description": "脏工作区切换策略。",
+      "oneOf": [
+        {
+          "const": "check",
+          "description": "发现未提交/未跟踪更改或 detached HEAD 时不切换，返回 `NeedsConfirmation`。",
+          "type": "string"
+        },
+        {
+          "const": "stash",
+          "description": "先 `git stash push --include-untracked` 保留改动再切换；失败时尽力自动回滚。",
+          "type": "string"
+        },
+        {
+          "const": "carry",
+          "description": "尝试带着更改安全切换（不强行覆盖）；发生文件覆盖冲突时返回 `NeedsConfirmation`。",
+          "type": "string"
+        }
+      ]
+    },
+    "GitWorktreeStatus": {
+      "additionalProperties": false,
+      "description": "工作区 Git 脏状态计数。",
+      "properties": {
+        "conflicted": {
+          "description": "未解决冲突（unmerged）的条目数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "staged": {
+          "description": "已暂存（index）的变更条目数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unstaged": {
+          "description": "工作区未暂存的已跟踪变更条目数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "untracked": {
+          "description": "未跟踪文件/目录条目数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "staged",
+        "unstaged",
+        "untracked",
+        "conflicted"
+      ],
+      "type": "object"
+    },
     "GoalAction": {
       "description": "`session/goal` 的动作。",
       "oneOf": [
@@ -9402,16 +9549,278 @@
     },
     "WorkspaceGitBranchResult": {
       "additionalProperties": false,
-      "description": "目录是否处于 Git 仓库中及当前分支。",
+      "description": "目录是否处于 Git 仓库中及当前 HEAD 概要。",
       "properties": {
         "branch": {
+          "description": "当前分支名；游离头指针（detached）或非仓库时为 `None`，空仓库（unborn）为初始分支名。",
           "type": [
             "string",
             "null"
           ]
+        },
+        "detached": {
+          "default": false,
+          "description": "是否处于游离头指针状态（detached HEAD）。",
+          "type": "boolean"
+        },
+        "head_oid": {
+          "description": "HEAD 短提交哈希；空仓库或非仓库时为 `None`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "root": {
+          "description": "仓库根目录（canonical/toplevel）；非仓库时为 `None`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unborn": {
+          "default": false,
+          "description": "是否为尚未有首次提交的空仓库（unborn HEAD）。",
+          "type": "boolean"
         }
       },
       "type": "object"
+    },
+    "WorkspaceGitBranchesParams": {
+      "additionalProperties": false,
+      "properties": {
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cwd"
+      ],
+      "type": "object"
+    },
+    "WorkspaceGitBranchesResult": {
+      "additionalProperties": false,
+      "properties": {
+        "busy_sessions": {
+          "description": "同仓库下正在运行 prompt / 子代理 / 后台任务的会话标题列表。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "current": {
+          "description": "当前分支名；detached HEAD 时为 `None`，unborn 时为初始分支名。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detached": {
+          "default": false,
+          "description": "是否处于 detached HEAD。",
+          "type": "boolean"
+        },
+        "head_oid": {
+          "description": "HEAD 短提交哈希；unborn 或非仓库时为 `None`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "in_progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitOperation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "正在进行中的仓库操作（存在时禁止切分支）。"
+        },
+        "in_repo": {
+          "description": "是否处于 Git 仓库中。",
+          "type": "boolean"
+        },
+        "local": {
+          "default": [],
+          "description": "本地分支（当前分支置顶，其余按提交时间降序）。",
+          "items": {
+            "$ref": "#/$defs/GitBranchEntry"
+          },
+          "type": "array"
+        },
+        "remote": {
+          "default": [],
+          "description": "远程分支（已过滤 `*/HEAD` 符号引用）。",
+          "items": {
+            "$ref": "#/$defs/GitRemoteBranchEntry"
+          },
+          "type": "array"
+        },
+        "root": {
+          "description": "仓库根目录；非仓库时为 `None`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/GitWorktreeStatus",
+          "description": "工作区未提交/未跟踪/冲突摘要。"
+        },
+        "unborn": {
+          "default": false,
+          "description": "是否为尚无提交的空仓库。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "in_repo",
+        "status"
+      ],
+      "type": "object"
+    },
+    "WorkspaceGitSwitchParams": {
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "description": "目标分支名：`create=true` 时为新分支名；`remote=true` 时为远程引用短名（如 `origin/feat`）。",
+          "type": "string"
+        },
+        "create": {
+          "default": false,
+          "description": "基于当前 HEAD 新建并切换分支（未提交更改会无损带入新分支）。",
+          "type": "boolean"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "dirty": {
+          "$ref": "#/$defs/GitSwitchDirtyPolicy",
+          "default": "check",
+          "description": "脏工作区处理策略。"
+        },
+        "remote": {
+          "default": false,
+          "description": "目标是否为远程跟踪分支（`create=true` 时忽略）。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cwd",
+        "branch"
+      ],
+      "type": "object"
+    },
+    "WorkspaceGitSwitchResult": {
+      "oneOf": [
+        {
+          "description": "切换或新建分支成功。",
+          "properties": {
+            "branch": {
+              "description": "切换后的本地分支名。",
+              "type": "string"
+            },
+            "created": {
+              "description": "是否新建了本地分支（含 `create=true` 或首次 track 远程分支）。",
+              "type": "boolean"
+            },
+            "outcome": {
+              "const": "switched",
+              "type": "string"
+            },
+            "previous_branch": {
+              "description": "切换前的分支名；detached HEAD 或未知时为 `None`。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stash_message": {
+              "description": "执行了自动暂存时携带 stash message。",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "outcome",
+            "branch",
+            "created"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "需要用户确认脏工作区处置或 detached HEAD 风险。",
+          "properties": {
+            "conflict_files": {
+              "description": "Git 报告的具体冲突文件路径。",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "detached": {
+              "default": false,
+              "description": "是否从 detached HEAD 切走。",
+              "type": "boolean"
+            },
+            "dirty_files": {
+              "description": "受影响的本地变更路径预览（已截断）。",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "outcome": {
+              "const": "needs_confirmation",
+              "type": "string"
+            },
+            "overwrite_conflict": {
+              "default": false,
+              "description": "`Carry` 策略下 Git 因本地文件会被目标分支覆盖而拒绝。",
+              "type": "boolean"
+            },
+            "status": {
+              "$ref": "#/$defs/GitWorktreeStatus"
+            }
+          },
+          "required": [
+            "outcome",
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "硬阻断：当前状态不可安全切换。",
+          "properties": {
+            "details": {
+              "description": "补充条目（运行中会话、冲突路径或占用 worktree 路径）。",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "message": {
+              "type": "string"
+            },
+            "outcome": {
+              "const": "blocked",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/GitSwitchBlockReason"
+            }
+          },
+          "required": [
+            "outcome",
+            "reason",
+            "message"
+          ],
+          "type": "object"
+        }
+      ]
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -10175,6 +10584,24 @@
           "$ref": "#/$defs/WorkspaceGitBranchResult"
         },
         "type": "WorkspaceGitBranch"
+      },
+      "workspace/git_branches": {
+        "params": {
+          "$ref": "#/$defs/WorkspaceGitBranchesParams"
+        },
+        "result": {
+          "$ref": "#/$defs/WorkspaceGitBranchesResult"
+        },
+        "type": "WorkspaceGitBranches"
+      },
+      "workspace/git_switch": {
+        "params": {
+          "$ref": "#/$defs/WorkspaceGitSwitchParams"
+        },
+        "result": {
+          "$ref": "#/$defs/WorkspaceGitSwitchResult"
+        },
+        "type": "WorkspaceGitSwitch"
       }
     },
     "server_notification": {

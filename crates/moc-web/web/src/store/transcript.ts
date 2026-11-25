@@ -31,6 +31,7 @@ import type {
   SessionUpdateParams,
 } from "@/protocol/types";
 import { usePrefs } from "./prefs";
+import { useSessions } from "./sessions";
 import { cancelAllViewReads, cancelViewReads, startViewReads, viewReadSignal } from "./view-reads";
 
 export type Activity = { running: boolean };
@@ -195,11 +196,52 @@ function flushDeltas(): void {
   );
 }
 
+/** 不会改写仓库 HEAD 的纯只读或会话控制工具；其余工具（bash、execute、子代理、插件/MCP）结束立即刷新分支。 */
+const GIT_SAFE_READONLY_TOOLS = new Set([
+  "read",
+  "grep",
+  "find",
+  "todo",
+  "plan",
+  "ask",
+  "webfetch",
+  "job",
+]);
+
+function mayChangeGitBranch(update: SessionUpdate): boolean {
+  if (
+    update.type === "job_finished" ||
+    update.type === "prompt_finished" ||
+    update.type === "agent_result"
+  ) {
+    return true;
+  }
+  if (update.type === "tool_finished") {
+    return !GIT_SAFE_READONLY_TOOLS.has(update.name);
+  }
+  if (update.type === "agent_status_changed") {
+    return (
+      update.status === "completed" ||
+      update.status === "stopped" ||
+      update.status === "failed" ||
+      update.status === "idle"
+    );
+  }
+  return false;
+}
+
+function sessionCwd(sessionId: string): string | undefined {
+  const open = useTranscript.getState().bySession[sessionId]?.info.cwd;
+  if (open) return open;
+  const sessions = useSessions.getState();
+  return sessions.extra[sessionId]?.cwd ?? sessions.list.find((item) => item.id === sessionId)?.cwd;
+}
+
 rpc.on("session/update", (params: SessionUpdateParams) => {
   const { session_id: sessionId, update } = params;
-  // bash 任务结束可能意味着 HEAD 被换掉，让分支缓存失效。
-  if (update.type === "job_finished") {
-    invalidateGitBranch(useTranscript.getState().bySession[sessionId]?.info.cwd);
+  // Agent 或手动命令执行 bash/execute/子代理/后台任务后可能已切换分支，立即失效并重查。
+  if (mayChangeGitBranch(update)) {
+    invalidateGitBranch(sessionCwd(sessionId));
   }
   if (update.type === "assistant_delta" && update.delta.type !== "usage") {
     if (!useTranscript.getState().bySession[sessionId]) return;

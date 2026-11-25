@@ -54,7 +54,8 @@ use crate::methods::{
     SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod,
     SessionUpdateParams, SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
     WebStateDocument, WebStateGetParams, WebStateSaveParams, WorkspaceGitBranchParams,
-    WorkspaceGitBranchResult,
+    WorkspaceGitBranchResult, WorkspaceGitBranchesParams, WorkspaceGitBranchesResult,
+    WorkspaceGitSwitchParams, WorkspaceGitSwitchResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -421,6 +422,24 @@ pub trait AgentService: Send + Sync + 'static {
         _ctx: RequestContext,
         _params: WorkspaceGitBranchParams,
     ) -> impl Future<Output = Result<WorkspaceGitBranchResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 列举工作目录所在 Git 仓库的分支与工作区状态。
+    fn workspace_git_branches(
+        &self,
+        _ctx: RequestContext,
+        _params: WorkspaceGitBranchesParams,
+    ) -> impl Future<Output = Result<WorkspaceGitBranchesResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 安全切换或新建并切换 Git 分支。
+    fn workspace_git_switch(
+        &self,
+        _ctx: RequestContext,
+        _params: WorkspaceGitSwitchParams,
+    ) -> impl Future<Output = Result<WorkspaceGitSwitchResult, RpcError>> + Send {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 

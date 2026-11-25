@@ -242,6 +242,7 @@ impl Core {
                 shutdown: tokio_util::sync::CancellationToken::new(),
                 sandbox_support,
                 web_state_sinks: parking_lot::Mutex::new(HashMap::new()),
+                git_switch_lock: Mutex::new(()),
             }),
         }))
     }

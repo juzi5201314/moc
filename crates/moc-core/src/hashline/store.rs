@@ -442,6 +442,20 @@ impl AnchorStore {
         }
     }
 
+    /// 批量失效所有已缓存文件锚点并清空撤销栈（用于切换 Git 分支等整树变化）。
+    pub fn invalidate_all(&self) {
+        let mut files = self.files.write();
+        let mut dirty = self.dirty.lock();
+        for (path, served) in files.iter_mut() {
+            served.invalidate();
+            dirty.insert(path.clone());
+        }
+        let mut undo = self.undo.write();
+        undo.by_path.clear();
+        undo.order.clear();
+        undo.bytes = 0;
+    }
+
     /// 压入一条撤销记录；超过字节上限的单条记录不保留并返回 `false`。
     pub fn push_undo(&self, path: PathBuf, bytes: Vec<u8>, expected: SnapshotId) -> bool {
         self.push_undo_with_budget(path, bytes, expected, MAX_UNDO_BYTES)

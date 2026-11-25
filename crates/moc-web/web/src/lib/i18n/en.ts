@@ -380,7 +380,6 @@ export const en: Record<MsgKey, string> = {
   "hd.untitled": "Untitled",
   "hd.rename_failed": "Rename failed: {error}",
   "hd.rename_hint": "{title} (double-click to rename)",
-  "hd.branch": "branch {branch}",
   "hd.readonly": "Read-only",
   "hd.readonly_by": "Read-only · {frontend}",
   "hd.readonly_tip": "Read-only: you can view history, not send messages.",
@@ -423,6 +422,51 @@ export const en: Record<MsgKey, string> = {
   "wel.pick_dir": "Choose a workspace",
   "wel.dirs": "Workspaces",
   "wel.open_other": "Open another folder…",
+
+  // ---------- git branch picker ----------
+  "git.switch_branch": "Switch Git branch (current: {branch})",
+  "git.disabled_running": "Session is running; wait or stop it before switching branches.",
+  "git.disabled_readonly": "Session is read-only; branch switching is disabled.",
+  "git.search_placeholder": "Search or create branch…",
+  "git.loading": "Loading branches…",
+  "git.load_failed": "Failed to load branches: {error}",
+  "git.retry": "Retry",
+  "git.local": "Local",
+  "git.remote": "Remote",
+  "git.local_exists": "local",
+  "git.empty": "No matching branches.",
+  "git.unborn_empty": "No commits yet; type a branch name to rename the initial branch.",
+  "git.create_switch": 'Create and switch to "{name}"',
+  "git.create_carries_changes": "Uncommitted changes will stay on the new branch",
+  "git.in_worktree": "Checked out in another worktree: {path}",
+  "git.dirty_summary": "Uncommitted changes: {summary}",
+  "git.stat_staged": "{n} staged",
+  "git.stat_unstaged": "{n} modified",
+  "git.stat_untracked": "{n} untracked",
+  "git.blocked_busy":
+    "Active sessions are running in this repo ({sessions}); wait or stop them first.",
+  "git.blocked_op": "Repository has a {op} in progress; finish or abort it first.",
+  "git.blocked_conflicts": "Working tree has {n} unresolved conflict(s); resolve them first.",
+  "git.detached_hint":
+    "HEAD is detached; switching away may leave commits unreachable unless you create a branch first.",
+  "git.confirm_title": "Switch to {branch}",
+  "git.confirm_dirty_desc":
+    "Working tree has uncommitted changes ({summary}). Choose how to proceed:",
+  "git.confirm_conflict_desc":
+    "These local changes would be overwritten by {branch}. Stash them before switching:",
+  "git.confirm_detached_desc":
+    "HEAD is detached; unreferenced commits may become unreachable after switching. Continue?",
+  "git.confirm_unsaved_desc":
+    "These files have unsaved editor drafts that may conflict after switching branches:",
+  "git.unsaved_warning": "Unsaved editor drafts (not captured by git stash): {files}",
+  "git.stash_and_switch": "Stash & switch",
+  "git.carry_changes": "Carry changes",
+  "git.switch_anyway": "Switch",
+  "git.switched": "Switched to branch {branch}",
+  "git.created_switched": "Created and switched to branch {branch}",
+  "git.switched_stashed": "Stashed changes and switched to {branch}",
+  "git.stash_hint": "Previous changes saved in git stash ({message}); recover with git stash pop.",
+  "git.switch_failed": "Failed to switch branch: {error}",
 
   // ---------- reverse requests ----------
   "req.tool_perm": "Permission",

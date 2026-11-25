@@ -1,12 +1,6 @@
 // 新会话欢迎页：品牌标题 + 内嵌输入框 + 工作目录选择。
 
-import {
-  CheckIcon,
-  ChevronDownIcon,
-  FolderOpenIcon,
-  FolderPlusIcon,
-  GitBranchIcon,
-} from "lucide-react";
+import { CheckIcon, ChevronDownIcon, FolderOpenIcon, FolderPlusIcon } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,7 +10,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useT } from "@/lib/i18n";
-import { useGitBranch } from "@/lib/use-git-branch";
 import { cn } from "@/lib/utils";
 import { setDraftCwd } from "@/store/lifecycle";
 import { usePrefs } from "@/store/prefs";
@@ -24,13 +17,13 @@ import { allSessions, useSessions, workspaceName } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
 import { ComposerBar } from "./composer-bar";
+import { GitBranchPicker } from "./git-branch-picker";
 import { InspectorToggle, SidebarReveal } from "./session-header";
 import { McpPopover } from "./status-popovers";
 
 function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
   const t = useT();
   const cwd = useTranscript((state) => state.bySession[sessionId]?.info.cwd ?? "");
-  const branch = useGitBranch(cwd || undefined);
   const workspaces = usePrefs((state) => state.workspaces);
   const list = useSessions((state) => state.list);
   const extra = useSessions((state) => state.extra);
@@ -98,12 +91,7 @@ function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      {branch && (
-        <span className="inline-flex min-w-0 items-center gap-1 px-1 text-text-tertiary">
-          <GitBranchIcon className="size-3.5 shrink-0" />
-          <span className="max-w-[160px] truncate font-mono text-xs">{branch}</span>
-        </span>
-      )}
+      <GitBranchPicker cwd={cwd || undefined} variant="welcome" />
     </div>
   );
 }

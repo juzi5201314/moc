@@ -111,6 +111,8 @@ pub(crate) struct CoreInner {
     /// 读过 `web/state` 的连接的 `web/state_updated` 扇出表；键为连接号。
     /// 连接断开没有回调，死连接在下次扇出发送失败时剔除。
     pub web_state_sinks: parking_lot::Mutex<HashMap<u64, UpdateSink>>,
+    /// 串行化 `workspace/git_switch`，避免并发切换/暂存互相踩踏。
+    pub git_switch_lock: Mutex<()>,
 }
 
 /// 代理运行时，通过协议层的 [`moc_protocol::AgentService`] 对外提供服务。
@@ -189,6 +191,7 @@ async fn usage_descendants(
 mod config_api;
 mod debug_info;
 mod export;
+mod git;
 mod inspect;
 mod mcp_api;
 mod plugin_api;

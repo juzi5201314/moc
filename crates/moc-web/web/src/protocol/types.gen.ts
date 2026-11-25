@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 40b68c66240e7af4
+// schema sha256: 4e27c01e9f213b22
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -336,6 +336,38 @@ export type FsEntryKind = "dir" | "file";
  * via the `definition` "FsFileEncoding".
  */
 export type FsFileEncoding = "utf8" | "binary";
+/**
+ * 仓库正在进行中的多步 Git 操作。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "GitOperation".
+ */
+export type GitOperation = "merge" | "rebase" | "cherry_pick" | "revert" | "bisect";
+/**
+ * 切换分支被硬阻断的原因分类。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "GitSwitchBlockReason".
+ */
+export type GitSwitchBlockReason =
+  | "not_a_repo"
+  | "busy_sessions"
+  | "operation_in_progress"
+  | "unresolved_conflicts"
+  | "worktree_in_use"
+  | "invalid_branch_name"
+  | "branch_exists"
+  | "branch_not_found"
+  | "unborn_repo"
+  | "lock_file"
+  | "git_failed";
+/**
+ * 脏工作区切换策略。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "GitSwitchDirtyPolicy".
+ */
+export type GitSwitchDirtyPolicy = "check" | "stash" | "carry";
 /**
  * `session/goal` 的动作。
  *
@@ -1203,6 +1235,59 @@ export type WorkflowApprovalKind = "launch" | "amend" | "hole_fill";
  * via the `definition` "WorkflowStopReason".
  */
 export type WorkflowStopReason = "user" | "interrupted" | "provider";
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "WorkspaceGitSwitchResult".
+ */
+export type WorkspaceGitSwitchResult =
+  | {
+      /**
+       * 切换后的本地分支名。
+       */
+      branch: string;
+      /**
+       * 是否新建了本地分支（含 `create=true` 或首次 track 远程分支）。
+       */
+      created: boolean;
+      outcome: "switched";
+      /**
+       * 切换前的分支名；detached HEAD 或未知时为 `None`。
+       */
+      previous_branch?: string | null;
+      /**
+       * 执行了自动暂存时携带 stash message。
+       */
+      stash_message?: string | null;
+    }
+  | {
+      /**
+       * Git 报告的具体冲突文件路径。
+       */
+      conflict_files?: string[];
+      /**
+       * 是否从 detached HEAD 切走。
+       */
+      detached?: boolean;
+      /**
+       * 受影响的本地变更路径预览（已截断）。
+       */
+      dirty_files?: string[];
+      outcome: "needs_confirmation";
+      /**
+       * `Carry` 策略下 Git 因本地文件会被目标分支覆盖而拒绝。
+       */
+      overwrite_conflict?: boolean;
+      status: GitWorktreeStatus;
+    }
+  | {
+      /**
+       * 补充条目（运行中会话、冲突路径或占用 worktree 路径）。
+       */
+      details?: string[];
+      message: string;
+      outcome: "blocked";
+      reason: GitSwitchBlockReason;
+    };
 
 /**
  * 子代理信息；`id` 直接使用持久化子会话 ID。
@@ -2523,6 +2608,78 @@ export interface FsWriteFileResult {
    * 写入后的字节数。
    */
   size: number;
+}
+/**
+ * 本地分支条目。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "GitBranchEntry".
+ */
+export interface GitBranchEntry {
+  /**
+   * 是否为当前 worktree 正在检出的分支。
+   */
+  current: boolean;
+  /**
+   * 本地分支短名（如 `master`、`feat/git-switch`）。
+   */
+  name: string;
+  /**
+   * 关联的上游分支短名（如 `origin/master`）。
+   */
+  upstream?: string | null;
+  /**
+   * 若已被其他 git worktree 检出，返回该 worktree 的路径；当前 worktree 为 `None`。
+   */
+  worktree_path?: string | null;
+}
+/**
+ * 远程跟踪分支条目。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "GitRemoteBranchEntry".
+ */
+export interface GitRemoteBranchEntry {
+  /**
+   * 去掉远程前缀后的分支名（如 `feat-x`）。
+   */
+  branch: string;
+  /**
+   * 本地是否已存在同名分支。
+   */
+  has_local: boolean;
+  /**
+   * 远程引用短名（如 `origin/feat-x`）。
+   */
+  name: string;
+  /**
+   * 远程名（如 `origin`）。
+   */
+  remote: string;
+}
+/**
+ * 工作区 Git 脏状态计数。
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "GitWorktreeStatus".
+ */
+export interface GitWorktreeStatus {
+  /**
+   * 未解决冲突（unmerged）的条目数。
+   */
+  conflicted: number;
+  /**
+   * 已暂存（index）的变更条目数。
+   */
+  staged: number;
+  /**
+   * 工作区未暂存的已跟踪变更条目数。
+   */
+  unstaged: number;
+  /**
+   * 未跟踪文件/目录条目数。
+   */
+  untracked: number;
 }
 /**
  * 机器可路由 + 人类可读的 blocked 原因。
@@ -6182,11 +6339,128 @@ export interface WorkspaceGitBranchParams {
   cwd: string;
 }
 /**
- * 目录是否处于 Git 仓库中及当前分支。
+ * 目录是否处于 Git 仓库中及当前 HEAD 概要。
  *
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
  * via the `definition` "WorkspaceGitBranchResult".
  */
 export interface WorkspaceGitBranchResult {
+  /**
+   * 当前分支名；游离头指针（detached）或非仓库时为 `None`，空仓库（unborn）为初始分支名。
+   */
   branch?: string | null;
+  /**
+   * 是否处于游离头指针状态（detached HEAD）。
+   */
+  detached?: boolean;
+  /**
+   * HEAD 短提交哈希；空仓库或非仓库时为 `None`。
+   */
+  head_oid?: string | null;
+  /**
+   * 仓库根目录（canonical/toplevel）；非仓库时为 `None`。
+   */
+  root?: string | null;
+  /**
+   * 是否为尚未有首次提交的空仓库（unborn HEAD）。
+   */
+  unborn?: boolean;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "WorkspaceGitBranchesParams".
+ */
+export interface WorkspaceGitBranchesParams {
+  cwd: string;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "WorkspaceGitBranchesResult".
+ */
+export interface WorkspaceGitBranchesResult {
+  /**
+   * 同仓库下正在运行 prompt / 子代理 / 后台任务的会话标题列表。
+   */
+  busy_sessions?: string[];
+  /**
+   * 当前分支名；detached HEAD 时为 `None`，unborn 时为初始分支名。
+   */
+  current?: string | null;
+  /**
+   * 是否处于 detached HEAD。
+   */
+  detached?: boolean;
+  /**
+   * HEAD 短提交哈希；unborn 或非仓库时为 `None`。
+   */
+  head_oid?: string | null;
+  /**
+   * 正在进行中的仓库操作（存在时禁止切分支）。
+   */
+  in_progress?: GitOperation | null;
+  /**
+   * 是否处于 Git 仓库中。
+   */
+  in_repo: boolean;
+  /**
+   * 本地分支（当前分支置顶，其余按提交时间降序）。
+   */
+  local?: GitBranchEntry[];
+  /**
+   * 远程分支（已过滤 `* /HEAD` 符号引用）。
+   */
+  remote?: GitRemoteBranchEntry[];
+  /**
+   * 仓库根目录；非仓库时为 `None`。
+   */
+  root?: string | null;
+  status: GitWorktreeStatus1;
+  /**
+   * 是否为尚无提交的空仓库。
+   */
+  unborn?: boolean;
+}
+/**
+ * 工作区未提交/未跟踪/冲突摘要。
+ */
+export interface GitWorktreeStatus1 {
+  /**
+   * 未解决冲突（unmerged）的条目数。
+   */
+  conflicted: number;
+  /**
+   * 已暂存（index）的变更条目数。
+   */
+  staged: number;
+  /**
+   * 工作区未暂存的已跟踪变更条目数。
+   */
+  unstaged: number;
+  /**
+   * 未跟踪文件/目录条目数。
+   */
+  untracked: number;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "WorkspaceGitSwitchParams".
+ */
+export interface WorkspaceGitSwitchParams {
+  /**
+   * 目标分支名：`create=true` 时为新分支名；`remote=true` 时为远程引用短名（如 `origin/feat`）。
+   */
+  branch: string;
+  /**
+   * 基于当前 HEAD 新建并切换分支（未提交更改会无损带入新分支）。
+   */
+  create?: boolean;
+  cwd: string;
+  /**
+   * 脏工作区处理策略。
+   */
+  dirty?: "check" | "stash" | "carry";
+  /**
+   * 目标是否为远程跟踪分支（`create=true` 时忽略）。
+   */
+  remote?: boolean;
 }
