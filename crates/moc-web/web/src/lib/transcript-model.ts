@@ -4,6 +4,7 @@
 import { type MsgKey, t } from "@/lib/i18n";
 import type {
   AgentInfo,
+  AgentMessageOutcome,
   AgentResultMeta,
   ContentPart,
   ContextUsageResult,
@@ -71,6 +72,7 @@ export type Block =
       id: string;
       toolCallId?: string;
       command: string;
+      excludeFromContext?: boolean;
       output?: string;
       isError?: boolean;
       job?: JobInfo;
@@ -78,7 +80,14 @@ export type Block =
       durationMs?: number;
       atMs: number;
     }
-  | { kind: "agent-message"; id: string; from: string; body: string; atMs: number }
+  | {
+      kind: "agent-message";
+      id: string;
+      from: string;
+      delivery?: AgentMessageOutcome;
+      body: string;
+      atMs: number;
+    }
   | {
       kind: "agent-result";
       id: string;
@@ -104,7 +113,7 @@ export type Block =
       durationMs?: number;
       /** 思考开始的时刻（历史取 assistant 条目时间）；活动行悬停时在左侧槽显示。 */
       atMs?: number;
-      /** 本次模型响应 usage 报告的思考 token 数；与本端实测的 durationMs 合算速率。 */
+      /** 本次模型响应 usage 报告的思考 token 数。 */
       tokens?: number;
     }
   | {
@@ -152,6 +161,8 @@ export type LiveTurn = {
   startedAt: number;
   /** 当前一轮生成的思考块与正文块 id；首个增量到达时才创建。 */
   reasoningId?: string;
+  /** 本轮生成最近创建的思考块 id；不受 `tool_preview` 清空，供末尾 `usage` 回填思考 token。 */
+  lastReasoningId?: string;
   textId?: string;
   /** 活动块的位置提示；历史前插/回退后用 id 校验并重新定位。 */
   reasoningIndex?: number;
@@ -399,11 +410,15 @@ export function entriesToBlocks(
   for (const entry of entries) {
     const message = entry.message;
     if (entry.bash) {
+      const status = entry.tool?.status;
       blocks.push({
         kind: "bash",
         id: nextId(),
         command: entry.bash.command,
+        excludeFromContext: entry.bash.exclude_from_context || undefined,
         output: messageText(message) || toolResultText(message),
+        isError: status !== undefined ? status !== "completed" : undefined,
+        durationMs: entry.tool?.duration_ms ?? undefined,
         atMs: entry.at_ms,
       });
       continue;
@@ -413,6 +428,7 @@ export function entriesToBlocks(
         kind: "agent-message",
         id: nextId(),
         from: entry.agent.from_title,
+        delivery: entry.agent.delivery,
         body: messageText(message),
         atMs: entry.at_ms,
       });
@@ -471,10 +487,20 @@ export function entriesToBlocks(
         let hasToolCall = false;
         let hasText = false;
         let textIndex = 0;
+        let lastReasoning: Extract<Block, { kind: "reasoning" }> | undefined;
         for (const part of message.content) {
           if ("Reasoning" in part) {
             const text = reasoningText(part);
-            if (text) blocks.push({ kind: "reasoning", id: nextId(), text, atMs: entry.at_ms });
+            if (text) {
+              const block: Extract<Block, { kind: "reasoning" }> = {
+                kind: "reasoning",
+                id: nextId(),
+                text,
+                atMs: entry.at_ms,
+              };
+              lastReasoning = block;
+              blocks.push(block);
+            }
           } else if ("Text" in part) {
             if (!part.Text) continue;
             hasText = true;
@@ -500,6 +526,14 @@ export function entriesToBlocks(
             );
             tools.set(call.id, block);
             blocks.push(block);
+          }
+        }
+        if (lastReasoning && entry.response) {
+          if (entry.response.reasoning_duration_ms != null) {
+            lastReasoning.durationMs = entry.response.reasoning_duration_ms;
+          }
+          if (entry.response.reasoning_tokens != null && entry.response.reasoning_tokens > 0) {
+            lastReasoning.tokens = entry.response.reasoning_tokens;
           }
         }
         if (hasText && !hasToolCall) {
@@ -815,7 +849,10 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       const live = ensureLive(view, update.prompt_id, now);
       live.mcpConnecting = undefined;
       live.reasoningId = undefined;
+      live.reasoningIndex = undefined;
+      live.lastReasoningId = undefined;
       live.textId = undefined;
+      live.textIndex = undefined;
       live.generationBlockIds = [];
       live.generationCommitted = false;
       break;
@@ -833,6 +870,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         live.textIndex = undefined;
         live.reasoningId = undefined;
         live.reasoningIndex = undefined;
+        live.lastReasoningId = undefined;
         live.usage = undefined;
         live.generationBlockIds = [];
       }
@@ -863,8 +901,13 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       const delta = update.delta;
       if (delta.type === "usage") {
         live.usage = delta.usage;
-        // 只回填本次响应自己的思考块：没有思考块的响应（上游可能报 0）不动上一块。
-        const reasoning = liveBlock(view, "reasoning");
+        // 只回填本次响应自己的思考块：没有思考块的响应（上游可能报 0）不动上一块；
+        // tool_preview 清空 reasoningId 后仍通过 lastReasoningId 找到本次响应的思考块。
+        const reasoning =
+          liveBlock(view, "reasoning") ??
+          (live.lastReasoningId
+            ? view.blocks.findLast((block) => block.id === live.lastReasoningId)
+            : undefined);
         if (reasoning?.kind === "reasoning" && delta.usage.reasoning_tokens) {
           reasoning.tokens = delta.usage.reasoning_tokens;
         }
@@ -875,6 +918,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
           view.blocks.push({ kind: "reasoning", id, text: "", startedAt: now, atMs: now });
           live.reasoningId = id;
           live.reasoningIndex = view.blocks.length - 1;
+          live.lastReasoningId = id;
           trackLiveBlock(view, id);
           block = view.blocks.at(-1);
         }
@@ -971,6 +1015,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         if (bash?.kind === "bash") {
           bash.output = update.result.content;
           bash.isError = update.result.is_error;
+          if (update.duration_ms != null) bash.durationMs = update.duration_ms;
           break;
         }
         block = newTool(nextId(view), update.tool_call_id, update.name, update.arguments, now);
@@ -1007,6 +1052,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         id: nextId(view),
         toolCallId: update.tool_call_id,
         command: update.command.command,
+        excludeFromContext: update.command.exclude_from_context || undefined,
         atMs: now,
       });
       break;
@@ -1251,6 +1297,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         kind: "agent-message",
         id: nextId(view),
         from: update.meta.from_title,
+        delivery: update.meta.delivery,
         body: update.body,
         atMs: now,
       });

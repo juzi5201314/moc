@@ -3,14 +3,16 @@
 // 视觉遵循 DESIGN.md：灰底圆角卡、不描边、等宽正文 text-xs，元信息用 tertiary。
 
 import AnsiModule from "ansi-to-react";
-import { CheckIcon, CopyIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, Loader2Icon } from "lucide-react";
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { TodoPhases } from "@/components/common/todo-phases";
 import { DiffBody, DiffStat, diffStats } from "@/components/panels/diff-file";
+import { formatDuration } from "@/lib/format";
 import { highlight } from "@/lib/highlight";
 import { t, useT } from "@/lib/i18n";
 import {
+  type AskAnswerPair,
   agentPreviews,
   BRIEF_BODY_ROWS,
   BRIEF_OUTPUT_ROWS,
@@ -19,9 +21,16 @@ import {
   fetchedPages,
   headLines,
   languageOf,
+  PREFER_BUILTIN_TAG,
   parseArgs,
+  parseAskAnswers,
+  parseMessageReceipts,
+  parseSidekickResult,
   parseTodo,
+  parseWaitResult,
   previewDiff,
+  type SidekickParsedResult,
+  type SidekickStructuredResult,
   tailLines,
   toolFailed,
   toolHeadline,
@@ -30,7 +39,7 @@ import {
 import type { ToolBlock } from "@/lib/transcript-model";
 import { useIsDark } from "@/lib/use-dark";
 import { cn } from "@/lib/utils";
-import type { ToolDiff } from "@/protocol/types";
+import type { AgentMessageReceipt, AgentStatus, ToolDiff } from "@/protocol/types";
 
 // ansi-to-react 是带 `__esModule` 的 CJS 包；本包 `type: module`，Vite 8 按 Node 语义把默认导入
 // 解析成整个 `module.exports`，组件在其 `.default` 上；vitest 的 SSR 变换则直接给组件本身。
@@ -294,9 +303,6 @@ function CommandBrief({
   );
 }
 
-/** 「内置工具优先」拒绝的固定前缀（ToolOutcome 的 `[{code}] ` 格式）。 */
-const PREFER_BUILTIN_TAG = "[E_PREFER_BUILTIN]";
-
 /**
  * 策略拒绝按建议而非失败展示：说明句用警告色，`- <tool> {…}` 建议行拆出工具名，
  * 不用 destructive 红；简略档与完整档都完整保留说明与建议（不能 tail 截断）。
@@ -440,6 +446,239 @@ function GenericResult({ text, error }: { text: string; error: boolean }) {
     return <CodeView lines={pretty.split("\n").map((line) => ({ text: line }))} language="json" />;
   }
   return <PlainOutput text={text} error={error} />;
+}
+
+// ---------- 子代理 / ask 专属视图 ----------
+
+type WaitRowItem = {
+  id: string;
+  title: string;
+  status: AgentStatus;
+  elapsedMs: number;
+  activity?: string | null;
+};
+
+function agentStatusTone(status: AgentStatus | string): { dot: string; text: string } {
+  switch (status) {
+    case "running":
+    case "queued":
+      return { dot: "bg-brand", text: "text-brand" };
+    case "completed":
+      return { dot: "bg-success", text: "text-success" };
+    case "failed":
+      return { dot: "bg-destructive", text: "text-destructive" };
+    default:
+      return { dot: "bg-text-tertiary", text: "text-text-tertiary" };
+  }
+}
+
+function AgentStatusRows({
+  rows,
+  level,
+  onExpand,
+}: {
+  rows: WaitRowItem[];
+  level: DetailLevel;
+  onExpand: () => void;
+}) {
+  if (rows.length === 0) return null;
+  const shown = level === "full" ? rows : rows.slice(0, BRIEF_BODY_ROWS);
+  const hidden = rows.length - shown.length;
+  return (
+    <div className={cn(CARD, "space-y-1 px-3 py-2 font-sans")}>
+      {shown.map((row) => {
+        const tone = agentStatusTone(row.status);
+        return (
+          <div key={row.id} className="flex items-center gap-2 text-xs">
+            {row.status === "running" || row.status === "queued" ? (
+              <Loader2Icon className="size-3 shrink-0 animate-spin text-brand" />
+            ) : (
+              <span className={cn("size-1.5 shrink-0 rounded-full", tone.dot)} />
+            )}
+            <span className="min-w-0 truncate text-foreground">{row.title}</span>
+            <span className={cn("shrink-0 text-2xs", tone.text)}>{row.status}</span>
+            {row.elapsedMs > 0 && (
+              <span className="shrink-0 font-mono text-2xs tabular-nums text-text-tertiary">
+                {formatDuration(row.elapsedMs)}
+              </span>
+            )}
+            {row.activity && (
+              <span className="min-w-0 flex-1 truncate text-text-tertiary">{row.activity}</span>
+            )}
+          </div>
+        );
+      })}
+      {hidden > 0 && <MoreLines hidden={hidden} onExpand={onExpand} />}
+    </div>
+  );
+}
+
+function MessageAgentView({
+  message,
+  receipts,
+  level,
+  onExpand,
+}: {
+  message: string;
+  receipts: AgentMessageReceipt[] | null;
+  level: DetailLevel;
+  onExpand: () => void;
+}) {
+  const showReceipts = Boolean(
+    receipts &&
+      receipts.length > 0 &&
+      (level === "full" ||
+        receipts.length > 1 ||
+        receipts.some((receipt) => receipt.outcome === "failed")),
+  );
+  const head = headLines(message, BRIEF_BODY_ROWS);
+  const visibleMessage = level === "full" ? message.trimEnd() : head.lines.join("\n");
+  const visibleReceipts = showReceipts
+    ? level === "full"
+      ? (receipts ?? [])
+      : (receipts ?? []).slice(0, BRIEF_BODY_ROWS)
+    : [];
+  const hiddenCount =
+    (level === "brief" ? head.hidden : 0) +
+    (showReceipts ? (receipts?.length ?? 0) - visibleReceipts.length : 0);
+  if (!visibleMessage && visibleReceipts.length === 0) return null;
+  return (
+    <div className={cn(CARD, "space-y-1.5 px-3 py-2 font-sans")}>
+      {visibleMessage && (
+        <div className="whitespace-pre-wrap text-xs leading-5 text-foreground [overflow-wrap:anywhere]">
+          {visibleMessage}
+        </div>
+      )}
+      {visibleReceipts.length > 0 && (
+        <div
+          className={cn(
+            "space-y-1 text-xs",
+            visibleMessage && "border-t border-border-subtle pt-1.5",
+          )}
+        >
+          {visibleReceipts.map((receipt) => {
+            const outcomeClass =
+              receipt.outcome === "failed"
+                ? "text-destructive"
+                : receipt.outcome === "injected"
+                  ? "text-brand"
+                  : "text-text-tertiary";
+            return (
+              <div key={receipt.agent_id} className="flex items-baseline gap-2">
+                <span className="shrink-0 text-muted-foreground">{receipt.title}</span>
+                <span className={cn("shrink-0 text-2xs", outcomeClass)}>{receipt.outcome}</span>
+                {receipt.error && (
+                  <span className="min-w-0 truncate text-2xs text-destructive">
+                    {receipt.error}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {hiddenCount > 0 && <MoreLines hidden={hiddenCount} onExpand={onExpand} />}
+    </div>
+  );
+}
+
+function sidekickSummaryText(structured: SidekickStructuredResult): string {
+  const parts = [t("tool.sk_result", { status: structured.status })];
+  if (structured.changesCount > 0) {
+    parts.push(t("tool.sk_changes", { n: structured.changesCount }));
+  }
+  const checks: string[] = [];
+  if (structured.passed > 0) checks.push(t("tool.sk_passed", { n: structured.passed }));
+  if (structured.failed > 0) checks.push(t("tool.sk_failed", { n: structured.failed }));
+  if (structured.notRun > 0) checks.push(t("tool.sk_not_run", { n: structured.notRun }));
+  if (checks.length > 0) parts.push(`${t("tool.sk_verify")} ${checks.join(" ")}`);
+  return parts.join(" · ");
+}
+
+function SidekickView({
+  parsed,
+  level,
+  onExpand,
+}: {
+  parsed: SidekickParsedResult;
+  level: DetailLevel;
+  onExpand: () => void;
+}) {
+  const tone = agentStatusTone(parsed.status ?? "running");
+  const issues = parsed.structured?.openIssues ?? [];
+  const visibleIssues = level === "full" ? issues : issues.slice(0, BRIEF_BODY_ROWS);
+  const reportHead = parsed.report ? headLines(parsed.report, BRIEF_BODY_ROWS) : null;
+  const visibleReport =
+    parsed.report && (level === "full" ? parsed.report.trimEnd() : reportHead?.lines.join("\n"));
+  const hidden =
+    issues.length -
+    visibleIssues.length +
+    (level === "brief" && reportHead ? reportHead.hidden : 0);
+  return (
+    <div className={cn(CARD, "space-y-1.5 px-3 py-2 font-sans text-xs")}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className={cn("size-1.5 shrink-0 rounded-full", tone.dot)} />
+        <span className="font-medium text-foreground">Sidekick</span>
+        {parsed.delivery && <span className="text-text-tertiary">· {parsed.delivery}</span>}
+        {parsed.status && <span className={tone.text}>· {parsed.status}</span>}
+        {parsed.model && (
+          <span className="font-mono text-2xs text-text-tertiary">· {parsed.model}</span>
+        )}
+      </div>
+      {parsed.structured && (
+        <div className="text-muted-foreground">{sidekickSummaryText(parsed.structured)}</div>
+      )}
+      {visibleIssues.length > 0 && (
+        <div className="space-y-0.5 text-warn">
+          {visibleIssues.map((issue, index) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: open_issues 是只读快照，顺序即身份
+            <div key={index} className="truncate">
+              ! {issue}
+            </div>
+          ))}
+        </div>
+      )}
+      {parsed.note && <div className="text-text-tertiary">{parsed.note}</div>}
+      {visibleReport && (
+        <div className="whitespace-pre-wrap leading-5 text-foreground [overflow-wrap:anywhere]">
+          {visibleReport}
+        </div>
+      )}
+      {hidden > 0 && <MoreLines hidden={hidden} onExpand={onExpand} />}
+    </div>
+  );
+}
+
+function AskAnswersView({
+  pairs,
+  level,
+  onExpand,
+}: {
+  pairs: AskAnswerPair[];
+  level: DetailLevel;
+  onExpand: () => void;
+}) {
+  const shown = level === "full" ? pairs : pairs.slice(0, BRIEF_BODY_ROWS);
+  const hidden = pairs.length - shown.length;
+  return (
+    <div className={cn(CARD, "space-y-1 px-3 py-2 font-sans text-xs")}>
+      {shown.map((pair, index) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: 问答对为只读结果快照
+        <div key={index} className="flex items-baseline gap-2">
+          {pair.key && <span className="shrink-0 text-text-tertiary">{pair.key}</span>}
+          <span
+            className={cn(
+              "min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere]",
+              pair.unanswered ? "text-warn" : "text-foreground",
+            )}
+          >
+            {pair.answer}
+          </span>
+        </div>
+      ))}
+      {hidden > 0 && <MoreLines hidden={hidden} onExpand={onExpand} />}
+    </div>
+  );
 }
 
 // ---------- 分发 ----------
@@ -650,6 +889,61 @@ export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => vo
       );
     }
     return <ArgsTable raw={tool.arguments} />;
+  }
+
+  if (tool.name === "message_agent") {
+    const receipts = parseMessageReceipts(result);
+    const message = arg("message");
+    if (message || receipts) {
+      return (
+        <MessageAgentView message={message} receipts={receipts} level={level} onExpand={onExpand} />
+      );
+    }
+  }
+
+  if (tool.name === "wait_agent") {
+    const rows: WaitRowItem[] = tool.progress?.length
+      ? tool.progress.map((row) => ({
+          id: row.agent_id,
+          title: row.title,
+          status: row.status,
+          elapsedMs: row.elapsed_ms,
+          activity: row.activity,
+        }))
+      : (parseWaitResult(result)?.agents ?? []).map((entry) => ({
+          id: entry.id,
+          title: entry.title,
+          status: entry.status,
+          elapsedMs: 0,
+        }));
+    if (rows.length > 0) {
+      return <AgentStatusRows rows={rows} level={level} onExpand={onExpand} />;
+    }
+  }
+
+  if (tool.name === "sidekick") {
+    if (result === undefined) {
+      if (tool.progress?.length) {
+        const rows: WaitRowItem[] = tool.progress.map((row) => ({
+          id: row.agent_id,
+          title: row.title,
+          status: row.status,
+          elapsedMs: row.elapsed_ms,
+          activity: row.activity,
+        }));
+        return <AgentStatusRows rows={rows} level={level} onExpand={onExpand} />;
+      }
+      return null;
+    }
+    const parsed = parseSidekickResult(result);
+    if (parsed) return <SidekickView parsed={parsed} level={level} onExpand={onExpand} />;
+  }
+
+  if (tool.name === "ask") {
+    const pairs = parseAskAnswers(tool);
+    if (pairs.length > 0) {
+      return <AskAnswersView pairs={pairs} level={level} onExpand={onExpand} />;
+    }
   }
 
   if (level !== "full") {

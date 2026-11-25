@@ -677,6 +677,7 @@ pub(super) async fn run_prompt_locked(
                 preview_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 let mut preview_identities = Vec::new();
                 let mut text_spans = super::stream::TextSpans::default();
+                let mut reasoning_timing = super::stream::ReasoningTiming::default();
                 let response: Result<_, StreamRecovery> = loop {
                     tokio::select! {
                         biased;
@@ -704,7 +705,9 @@ pub(super) async fn run_prompt_locked(
                                                 as u64,
                                         );
                                     }
-                                    text_spans.observe(&event, crate::session::store::now_ms());
+                                    let now = crate::session::store::now_ms();
+                                    text_spans.observe(&event, now);
+                                    reasoning_timing.observe(&event, now);
                                     let forwarded = async {
                                         if previews.apply(&event) {
                                             previews.flush(&update, &params.session_id, &prompt_id).await?;
@@ -950,6 +953,21 @@ pub(super) async fn run_prompt_locked(
                     break 'turns;
                 }
                 // 完整响应先落库，再发通知和记用量：辅助步骤失败不能吞掉已经完整收到的模型响应。
+                let has_reasoning = response.message.content.iter().any(|part| {
+                    matches!(
+                        part,
+                        moc_llm::ContentPart::Reasoning(block)
+                            if block
+                                .display_text()
+                                .is_some_and(|text| !text.trim().is_empty())
+                    )
+                });
+                let reasoning_duration_ms = has_reasoning
+                    .then(|| reasoning_timing.into_duration_ms(crate::session::store::now_ms()))
+                    .flatten();
+                let reasoning_tokens = has_reasoning
+                    .then(|| response.usage.reasoning_tokens.filter(|&tokens| tokens > 0))
+                    .flatten();
                 inner
                     .sessions
                     .append_response(
@@ -959,6 +977,8 @@ pub(super) async fn run_prompt_locked(
                         moc_protocol::ResponseMeta {
                             model: model.selector.clone(),
                             text_spans: text_spans.into_spans(),
+                            reasoning_duration_ms,
+                            reasoning_tokens,
                         },
                     )
                     .await

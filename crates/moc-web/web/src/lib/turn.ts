@@ -215,32 +215,6 @@ export function activityKind(block: Block): ActivityKind | null {
   }
 }
 
-/** 活动行首的动作名（进行式去掉「正在」前缀的形态）。 */
-const ROW_VERB: Record<ActivityKind, MsgKey> = {
-  thinking: "verb.thinking",
-  commands: "verb.commands",
-  code: "verb.code",
-  read: "verb.read",
-  readImage: "verb.readImage",
-  write: "verb.write",
-  edit: "verb.edit",
-  search: "verb.search",
-  webSearch: "verb.webSearch",
-  webFetch: "verb.webFetch",
-  subagents: "verb.subagents",
-  plan: "verb.plan",
-  questions: "verb.questions",
-  tools: "verb.tools",
-  showcase: "verb.showcase",
-};
-
-/** 单个活动块的动作名。 */
-export function activityVerb(block: Block): string | null {
-  if (block.kind === "status") return t("verb.status");
-  const kind = activityKind(block);
-  return kind ? t(ROW_VERB[kind]) : null;
-}
-
 /** 分组标题的完成式文案。 */
 const DONE_TITLE: Record<ActivityKind, MsgKey> = {
   thinking: "done.thinking",
@@ -316,11 +290,13 @@ export function summarizeActivity(blocks: Block[], done = true): string {
   return counts.size > 3 ? t("act.more", { list: title }) : title;
 }
 
-/** 用时：`23秒`/`23s` / `12分17秒`/`12m 17s`——总秒数向下取整。 */
+/** 用时：`23s` / `12m 17s` / `1h 5m`——总秒数向下取整。 */
 export function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
+  if (hours > 0) return t("dur.hourmin", { h: hours, m: minutes });
   return minutes > 0 ? t("dur.minsec", { m: minutes, s: seconds }) : t("dur.sec", { s: seconds });
 }
 

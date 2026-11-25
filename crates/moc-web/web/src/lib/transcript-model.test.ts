@@ -876,4 +876,89 @@ describe("applyUpdate", () => {
       ).toBe(true);
     }
   });
+
+  it("tool_preview 不丢失本轮思考 token，历史回放还原思考耗时/token、bash 排除标记与 IRC 投递状态", () => {
+    const view = createView(INFO);
+    applyUpdate(view, { type: "prompt_started", prompt_id: "p", model: "m", at_ms: 0 }, 1000);
+    applyUpdate(
+      view,
+      { type: "assistant_delta", prompt_id: "p", delta: { type: "reasoning", delta: "先看代码" } },
+      1000,
+    );
+    applyUpdate(
+      view,
+      {
+        type: "tool_preview",
+        prompt_id: "p",
+        preview_id: "pv1",
+        tool_call_id: null,
+        name: "read",
+        preview: { target: "a.rs", summary: "", body: "", language: null, truncated: false },
+      },
+      2500,
+    );
+    applyUpdate(
+      view,
+      {
+        type: "assistant_delta",
+        prompt_id: "p",
+        delta: {
+          type: "usage",
+          usage: { input_tokens: 10, output_tokens: 20, reasoning_tokens: 345 },
+        },
+      },
+      2600,
+    );
+    const reasoning = view.blocks.find((block) => block.kind === "reasoning");
+    expect(reasoning).toMatchObject({ durationMs: 1500, tokens: 345 });
+
+    // 新一轮生成不再把 usage 回填到旧思考块
+    applyUpdate(view, { type: "generation_started", prompt_id: "p" }, 3000);
+    applyUpdate(
+      view,
+      {
+        type: "assistant_delta",
+        prompt_id: "p",
+        delta: {
+          type: "usage",
+          usage: { input_tokens: 10, output_tokens: 20, reasoning_tokens: 999 },
+        },
+      },
+      3100,
+    );
+    expect(reasoning).toMatchObject({ tokens: 345 });
+
+    const restored = entriesToBlocks([
+      {
+        id: "e1",
+        at_ms: 100,
+        message: { role: "User", content: [{ Text: "out" }] },
+        bash: { command: "ls", exclude_from_context: true },
+        tool: { tool_call_id: "b1", status: "error", duration_ms: 161 },
+      },
+      {
+        id: "e2",
+        at_ms: 200,
+        message: { role: "Custom", content: [{ Text: "msg" }] },
+        agent: { from_id: "a1", from_title: "Scout", delivery: "woken" },
+      },
+      {
+        id: "e3",
+        at_ms: 300,
+        message: {
+          role: "Assistant",
+          content: [{ Reasoning: { Text: { text: "思考" } } }, { Text: "结论" }],
+        },
+        response: { model: "p/m", reasoning_duration_ms: 2400, reasoning_tokens: 512 },
+      },
+    ]);
+    expect(restored[0]).toMatchObject({
+      kind: "bash",
+      excludeFromContext: true,
+      isError: true,
+      durationMs: 161,
+    });
+    expect(restored[1]).toMatchObject({ kind: "agent-message", from: "Scout", delivery: "woken" });
+    expect(restored[2]).toMatchObject({ kind: "reasoning", durationMs: 2400, tokens: 512 });
+  });
 });

@@ -1,5 +1,5 @@
 // Code generated from moc-protocol/protocol.schema.json; DO NOT EDIT.
-// schema sha256: 03fb2fe526ef452a
+// schema sha256: 40b68c66240e7af4
 // 重生成：pnpm gen:protocol（Rust 侧先 MOC_UPDATE_SCHEMA=1 cargo test -p moc-protocol）。
 // biome-ignore-all lint/complexity/noBannedTypes: 空 params 的 schema 没有字段，json2ts 生成空类型
 // biome-ignore-all lint/suspicious/noEmptyInterface: 空 params 的 schema 没有字段，json2ts 生成空接口
@@ -3610,6 +3610,14 @@ export interface ResponseMeta {
    * 生成该响应的模型选择器（`provider/model[:level]`）。
    */
   model: string;
+  /**
+   * 本次响应思考阶段总耗时（毫秒）；无思考内容或旧会话日志为 `None`。
+   */
+  reasoning_duration_ms?: number | null;
+  /**
+   * 本次响应上游报告的思考 token 数（存在思考内容且非零时记录）；无思考或旧会话日志为 `None`。
+   */
+  reasoning_tokens?: number | null;
   /**
    * 各正文段的流式时间窗，与 `message` 中的 Text 部分按序一一对应。
    */

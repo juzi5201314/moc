@@ -61,6 +61,12 @@ pub struct ResponseMeta {
     /// 各正文段的流式时间窗，与 `message` 中的 Text 部分按序一一对应。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub text_spans: Vec<TextSpan>,
+    /// 本次响应思考阶段总耗时（毫秒）；无思考内容或旧会话日志为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_duration_ms: Option<u64>,
+    /// 本次响应上游报告的思考 token 数（存在思考内容且非零时记录）；无思考或旧会话日志为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
 }
 
 /// 一条 transcript 条目。

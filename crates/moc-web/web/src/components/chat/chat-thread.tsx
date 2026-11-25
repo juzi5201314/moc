@@ -47,7 +47,7 @@ import { AskCard, PermissionCard } from "@/components/chat/requests";
 import { IconButton } from "@/components/common/icon-button";
 import { DiffStat } from "@/components/panels/diff-file";
 import { Button } from "@/components/ui/button";
-import { clockTime } from "@/lib/format";
+import { clockTime, formatDuration as formatElapsed } from "@/lib/format";
 import { type MsgKey, t, useT } from "@/lib/i18n";
 import { modelName } from "@/lib/models";
 import { type Block, finishLabel } from "@/lib/transcript-model";
@@ -700,6 +700,14 @@ function AssistantTurn({
       ? (segments[finalIndex] as Extract<Segment, { kind: "text" }>).block
       : undefined;
   const durationMs = workDurationMs(turn, finalBlock);
+  // 纯文本回复没有外层「Worked」折叠行，在回复尾注补展示本次耗时（与 TUI 对齐）。
+  const replyDurationMs =
+    processCount === 0
+      ? (turn.footer?.durationMs ??
+        (turn.footer && turn.user && turn.footer.atMs > turn.user.atMs
+          ? turn.footer.atMs - turn.user.atMs
+          : undefined))
+      : undefined;
   const finish = turn.footer?.finishReason;
   const finishText = finishLabel(finish);
   const abnormal =
@@ -851,6 +859,9 @@ function AssistantTurn({
               <span className="font-mono">{modelName(turn.footer.model)}</span>
             )}
             {finishText && <span className="text-warn">{finishText}</span>}
+            {replyDurationMs !== undefined && (
+              <span className="tabular-nums">{formatElapsed(replyDurationMs)}</span>
+            )}
             {turn.footer && <span className="tabular-nums">{clockTime(turn.footer.atMs)}</span>}
           </span>
         </div>

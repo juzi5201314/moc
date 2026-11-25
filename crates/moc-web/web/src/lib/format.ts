@@ -13,14 +13,19 @@ export function relativeTime(atMs: number, now = Date.now()): string {
   return t("rel.year", { n: Math.floor(diff / (365 * 86_400_000)) });
 }
 
-/** 毫秒 → `850ms` / `3.2s` / `2m05s`。 */
+/** 毫秒 → `850ms` / `3.2s` / `2m05s` / `1h05m`（与 TUI `labels::duration` 一致）。 */
 export function formatDuration(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const minutes = Math.floor(seconds / 60);
-  const rest = Math.floor(seconds % 60);
-  return `${minutes}m${String(rest).padStart(2, "0")}s`;
+  const safe = Math.max(0, Math.round(ms));
+  if (safe < 1000) return `${safe}ms`;
+  if (safe < 60_000) return `${Math.floor(safe / 1000)}.${Math.floor((safe % 1000) / 100)}s`;
+  if (safe < 3_600_000) {
+    const minutes = Math.floor(safe / 60_000);
+    const rest = Math.floor((safe % 60_000) / 1000);
+    return `${minutes}m${String(rest).padStart(2, "0")}s`;
+  }
+  const hours = Math.floor(safe / 3_600_000);
+  const minutes = Math.floor((safe % 3_600_000) / 60_000);
+  return `${hours}h${String(minutes).padStart(2, "0")}m`;
 }
 
 /** token 数 → `980` / `12.3k` / `1.2M`。 */

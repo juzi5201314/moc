@@ -6,7 +6,14 @@
 import { type MsgKey, t } from "@/lib/i18n";
 import type { Block, ToolBlock } from "@/lib/transcript-model";
 import { activitySnippet } from "@/lib/turn";
-import type { TodoPhase, TodoStatus, ToolDiff, WebDetailLevel } from "@/protocol/types";
+import type {
+  AgentMessageReceipt,
+  AgentWaitResult,
+  TodoPhase,
+  TodoStatus,
+  ToolDiff,
+  WebDetailLevel,
+} from "@/protocol/types";
 
 export type DetailLevel = WebDetailLevel;
 
@@ -67,6 +74,63 @@ export function bodyPolicy(name: string): BodyPolicy {
 export function groupable(name: string): boolean {
   const policy = bodyPolicy(name);
   return policy === "title" || (policy === "summary" && name !== "web_fetch");
+}
+
+/** 内置工具的展示名（与 TUI 对齐，PascalCase）；MCP 与插件工具保留原始名称。 */
+const BUILTIN_TOOL_NAMES: Record<string, string> = {
+  bash: "Bash",
+  read: "Read",
+  edit: "Edit",
+  write: "Write",
+  grep: "Grep",
+  find: "Find",
+  execute: "Execute",
+  todo: "Todo",
+  web_fetch: "WebFetch",
+  ask: "Ask",
+  skill: "Skill",
+  clm_context: "ClmContext",
+  job: "Job",
+  plan: "Plan",
+  exit_plan: "ExitPlan",
+  TodoReminder: "TodoReminder",
+  spawn_agent: "SpawnAgent",
+  list_agents: "ListAgents",
+  message_agent: "IRC",
+  stop_agent: "StopAgent",
+  wait_agent: "WaitAgent",
+  sidekick: "Sidekick",
+  yield: "Yield",
+  get_goal: "GetGoal",
+  create_goal: "CreateGoal",
+  update_goal: "UpdateGoal",
+  create_workflow: "CreateWorkflow",
+  amend_workflow: "AmendWorkflow",
+  resume_workflow_run: "ResumeWorkflowRun",
+  stop_workflow_run: "StopWorkflowRun",
+  fill_workflow_hole: "FillWorkflowHole",
+  save_workflow: "SaveWorkflow",
+  list_saved_workflows: "ListSavedWorkflows",
+  workflow_status: "WorkflowStatus",
+  eval_workflow_snippet: "EvalWorkflowSnippet",
+};
+
+/** 工具标题名：内置工具用 PascalCase，手动 bash 与 IRC/Sidekick 与 TUI 对齐，MCP/插件原样展示。 */
+export function toolDisplayName(name: string, args?: Record<string, unknown>): string {
+  if (name === "bash" && typeof args?.exclude_from_context === "boolean") {
+    return args.exclude_from_context ? t("tool.bash_excluded") : "! Bash";
+  }
+  return BUILTIN_TOOL_NAMES[name] ?? (name || t("tm.tool"));
+}
+
+/** 「内置工具优先」拒绝的固定前缀（ToolOutcome 的 `[{code}] ` 格式）。 */
+export const PREFER_BUILTIN_TAG = "[E_PREFER_BUILTIN]";
+
+/** 内置工具优先策略重定向：按警告而非失败样式呈现，与 TUI `prefer_builtin_redirect` 一致。 */
+export function preferBuiltinRedirect(tool: ToolBlock): boolean {
+  return (
+    toolFailed(tool) && tool.name === "bash" && Boolean(tool.result?.startsWith(PREFER_BUILTIN_TAG))
+  );
 }
 
 export function toolFailed(tool: ToolBlock): boolean {
@@ -174,15 +238,54 @@ function count(n: number, singular: string, plural: string): string {
 export type Headline = {
   /** 动作之后的主体：路径、命令描述、查询词。 */
   target: string;
-  /** 主体之后的次级范围（grep/find 的搜索根）。 */
+  /** 主体之后的次级范围（grep/find 搜索根、read 目录 glob、skill 描述、sidekick 标记）。 */
   scope?: string;
-  /** 右侧尾注：数量、退出码。 */
+  /** 右侧尾注：数量、退出码、投递结果。 */
   stat?: string;
   /** 尾注是失败信息。 */
   statError?: boolean;
+  /** 尾注是警告信息（如 wait_agent 超时）。 */
+  statWarn?: boolean;
   /** 覆盖默认动作名。 */
   verb?: string;
 };
+
+/** todo 摘要：与 TUI `todo_summary_spans` 同规则。 */
+function todoSummary(args: Record<string, unknown>): string {
+  const op =
+    str(args, "op") ||
+    (Array.isArray(args.list) && args.list.length > 0
+      ? "init"
+      : Array.isArray(args.items) && args.items.length > 0 && str(args, "phase")
+        ? "append"
+        : "init");
+  if (op === "init") {
+    const count = Array.isArray(args.list)
+      ? args.list.reduce((sum, phase) => {
+          const items =
+            phase && typeof phase === "object"
+              ? (phase as Record<string, unknown>).items
+              : undefined;
+          return sum + (Array.isArray(items) ? items.length : 0);
+        }, 0)
+      : Array.isArray(args.items)
+        ? args.items.length
+        : undefined;
+    return count !== undefined ? `${op} ${count} tasks` : op;
+  }
+  if (op === "append") {
+    const phase = str(args, "phase");
+    const items = Array.isArray(args.items) ? args.items : undefined;
+    const parts = [phase ? `${op} ${phase}` : op];
+    if (items !== undefined) parts.push(`${items.length} items`);
+    return parts.join(" · ");
+  }
+  if (op === "rm") {
+    const target = str(args, "task") || str(args, "phase");
+    return target ? `${op} ${target}` : op;
+  }
+  return op;
+}
 
 export function toolHeadline(tool: ToolBlock): Headline {
   if (tool.preview)
@@ -195,7 +298,8 @@ export function toolHeadline(tool: ToolBlock): Headline {
   switch (tool.name) {
     case "read": {
       const range = readRange(args, result);
-      return { target: `${str(args, "path")}${range}` };
+      const globs = strings(args, "glob").join(" ");
+      return { target: `${str(args, "path")}${range}`, scope: globs || undefined };
     }
     case "grep":
       return {
@@ -227,17 +331,18 @@ export function toolHeadline(tool: ToolBlock): Headline {
     case "write":
       return { target: str(args, "path") };
     case "todo": {
-      const op = str(args, "op");
       const phases = result !== undefined && !failed ? parseTodo(result) : [];
       const items = phases.flatMap((phase) => phase.items);
+      const done = items.filter(
+        (item) => item.status === "completed" || item.status === "abandoned",
+      ).length;
       return {
-        verb: t(op === "view" ? "tool.todo_view" : "tool.todo_update"),
-        target: "",
-        stat: items.length
-          ? `${items.filter((item) => item.status === "completed").length}/${items.length}`
-          : undefined,
+        target: todoSummary(args),
+        stat: items.length ? `${done}/${items.length}` : undefined,
       };
     }
+    case "TodoReminder":
+      return { target: t("tool.todo_reminder") };
     case "web_fetch": {
       const urls = strings(args, "urls");
       return {
@@ -254,12 +359,63 @@ export function toolHeadline(tool: ToolBlock): Headline {
       };
     case "yield":
       return { target: t("tool.report") };
-    case "skill":
-      return { target: str(args, "name") };
+    case "skill": {
+      const firstLine = result?.split("\n", 1)[0] ?? "";
+      const description = firstLine.startsWith("Skill description: ")
+        ? firstLine.slice("Skill description: ".length)
+        : undefined;
+      return { target: str(args, "name"), scope: description || undefined };
+    }
     case "clm_context":
       return { target: str(args, "op") };
     case "stop_agent":
       return { target: str(args, "agent_id") };
+    case "message_agent": {
+      const rawTarget = str(args, "target");
+      const receipts = parseMessageReceipts(result);
+      const target = rawTarget ? `▶ ${rawTarget}` : "";
+      if (!receipts) return { target };
+      const failedCount = receipts.filter((receipt) => receipt.outcome === "failed").length;
+      const parts: string[] = [];
+      if (rawTarget === "all") parts.push(t("tool.broadcast"));
+      if (receipts.length === 1) {
+        parts.push(receipts[0].outcome);
+      } else {
+        parts.push(t("tool.delivered", { n: receipts.length - failedCount }));
+      }
+      if (failedCount > 0) parts.push(t("tool.failed_n", { n: failedCount }));
+      return {
+        target,
+        stat: parts.join(" · "),
+        statError: failedCount > 0,
+      };
+    }
+    case "wait_agent": {
+      const ids = strings(args, "agent_ids");
+      const target = ids.length > 0 ? t("tool.wait_count", { n: ids.length }) : t("tool.wait_all");
+      const parsed = parseWaitResult(result);
+      if (!parsed) return { target };
+      const parts: string[] = [];
+      if (parsed.messages_pending) parts.push(t("tool.new_messages"));
+      if (parsed.timed_out) parts.push(t("tool.timed_out"));
+      return {
+        target,
+        stat: parts.length ? parts.join(" · ") : undefined,
+        statWarn: parsed.timed_out || undefined,
+      };
+    }
+    case "sidekick": {
+      const mode = str(args, "mode") || "keep";
+      const first = mode === "retry" ? "retry" : (str(args, "message").split("\n", 1)[0] ?? "");
+      const flags: string[] = [];
+      if (mode === "compact") flags.push(t("tool.flag_compact"));
+      else if (mode === "fresh") flags.push(t("tool.flag_fresh"));
+      if (args.block === false) flags.push(t("tool.flag_background"));
+      return {
+        target: first,
+        scope: flags.length ? flags.join(" · ") : undefined,
+      };
+    }
     case "ask": {
       const questions = Array.isArray(args.questions) ? args.questions : [];
       const first = questions[0] as { question?: unknown } | undefined;
@@ -520,6 +676,170 @@ export const LEVEL_LABEL: Record<DetailLevel, MsgKey> = {
   brief: "level.brief",
   full: "level.full",
 };
+
+// ---------- 子代理 / ask 结构化解析 ----------
+
+/** 解析 `message_agent` 的投递回执（与 TUI `message_receipts` 同口径）。 */
+export function parseMessageReceipts(result?: string): AgentMessageReceipt[] | null {
+  if (!result) return null;
+  try {
+    const parsed: unknown = JSON.parse(result);
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      !Array.isArray((parsed as { receipts?: unknown }).receipts)
+    ) {
+      return null;
+    }
+    const receipts = (parsed as { receipts: unknown[] }).receipts.filter(
+      (item): item is AgentMessageReceipt =>
+        item !== null &&
+        typeof item === "object" &&
+        typeof (item as Record<string, unknown>).title === "string" &&
+        typeof (item as Record<string, unknown>).outcome === "string",
+    );
+    return receipts;
+  } catch {
+    return null;
+  }
+}
+
+/** 解析 `wait_agent` 的等待结果（与 TUI `wait_result` 同口径）。 */
+export function parseWaitResult(result?: string): AgentWaitResult | null {
+  if (!result) return null;
+  try {
+    const parsed: unknown = JSON.parse(result);
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      !Array.isArray((parsed as { agents?: unknown }).agents)
+    ) {
+      return null;
+    }
+    return parsed as AgentWaitResult;
+  } catch {
+    return null;
+  }
+}
+
+export type SidekickStructuredResult = {
+  status: string;
+  changesCount: number;
+  passed: number;
+  failed: number;
+  notRun: number;
+  openIssues: string[];
+};
+
+export type SidekickParsedResult = {
+  status?: string;
+  delivery?: string;
+  model?: string;
+  note?: string;
+  report?: string;
+  structured?: SidekickStructuredResult;
+};
+
+/** 解析 `sidekick` 的 JSON 结果（与 TUI `sidekick_tool_rows` 同口径）。 */
+export function parseSidekickResult(result?: string): SidekickParsedResult | null {
+  if (!result) return null;
+  try {
+    const raw: unknown = JSON.parse(result);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const obj = raw as Record<string, unknown>;
+    if (
+      !("status" in obj) &&
+      !("delivery" in obj) &&
+      !("report" in obj) &&
+      !("note" in obj) &&
+      !("result" in obj)
+    ) {
+      return null;
+    }
+    let structured: SidekickStructuredResult | undefined;
+    if (obj.result && typeof obj.result === "object" && !Array.isArray(obj.result)) {
+      const res = obj.result as Record<string, unknown>;
+      const verification = Array.isArray(res.verification) ? res.verification : [];
+      const countOutcome = (outcome: string) =>
+        verification.filter(
+          (item) =>
+            item !== null &&
+            typeof item === "object" &&
+            (item as Record<string, unknown>).outcome === outcome,
+        ).length;
+      structured = {
+        status: typeof res.status === "string" ? res.status : "",
+        changesCount: Array.isArray(res.changes) ? res.changes.length : 0,
+        passed: countOutcome("passed"),
+        failed: countOutcome("failed"),
+        notRun: countOutcome("not_run"),
+        openIssues: Array.isArray(res.open_issues)
+          ? res.open_issues.filter((item): item is string => typeof item === "string")
+          : [],
+      };
+    }
+    return {
+      status: typeof obj.status === "string" && obj.status ? obj.status : undefined,
+      delivery: typeof obj.delivery === "string" && obj.delivery ? obj.delivery : undefined,
+      model: typeof obj.model === "string" && obj.model ? obj.model : undefined,
+      note: typeof obj.note === "string" && obj.note ? obj.note : undefined,
+      report: typeof obj.report === "string" && obj.report ? obj.report : undefined,
+      structured,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export type AskAnswerPair = { key: string; answer: string; unanswered: boolean };
+
+const ASK_UNANSWERED = "The user did not answer.";
+const ASK_TIMEOUT = "The user did not answer within the time limit; continue without an answer.";
+
+/** 解析 `ask` 问答对（与 TUI `ask_answer_pairs` 同规则）。 */
+export function parseAskAnswers(tool: ToolBlock): AskAnswerPair[] {
+  if (!tool.result) return [];
+  const trimmed = tool.result.trimEnd();
+  if (!trimmed) return [];
+  if (trimmed === ASK_TIMEOUT) {
+    return [{ key: "", answer: t("tool.ask_timeout"), unanswered: true }];
+  }
+  if (trimmed === ASK_UNANSWERED) {
+    return [{ key: "", answer: t("tool.ask_unanswered"), unanswered: true }];
+  }
+  const args = parseArgs(tool.arguments);
+  const questions = (Array.isArray(args.questions) ? args.questions : []).map((question) => {
+    const obj =
+      question && typeof question === "object" ? (question as Record<string, unknown>) : {};
+    const id = typeof obj.id === "string" ? obj.id : "";
+    const header = typeof obj.header === "string" ? obj.header.trim() : "";
+    return { id, key: header || id };
+  });
+  const lines = trimmed.split("\n");
+  const start = trimmed.startsWith("User answers:") ? 1 : 0;
+  const pairs: { id: string; answer: string }[] = [];
+  for (let index = start; index < lines.length; index++) {
+    const line = lines[index];
+    const matched = questions.find((q) => q.id && line.startsWith(`${q.id}: `));
+    if (matched) {
+      pairs.push({ id: matched.id, answer: line.slice(matched.id.length + 2) });
+    } else if (pairs.length > 0) {
+      pairs[pairs.length - 1].answer += ` ${line.trim()}`;
+    } else if (questions.length === 1) {
+      pairs.push({ id: questions[0].id, answer: line });
+    }
+  }
+  return pairs.map((pair, index) => {
+    const key =
+      questions.find((q) => q.id === pair.id)?.key || questions[index]?.key || t("tool.ask_answer");
+    const unanswered = pair.answer === ASK_UNANSWERED;
+    return {
+      key,
+      answer: unanswered ? t("tool.ask_unanswered") : pair.answer,
+      unanswered,
+    };
+  });
+}
 
 // ---------- 合并 ----------
 

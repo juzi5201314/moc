@@ -297,13 +297,23 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
 
 // ---------- 用量 ----------
 
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({ label, value, className }: { label: string; value: string; className?: string }) {
   return (
-    <div className="rounded-lg bg-muted/60 px-3 py-2">
+    <div className={cn("rounded-lg bg-muted/60 px-3 py-2", className)}>
       <div className="text-2xs text-text-tertiary">{label}</div>
       <div className="mt-0.5 font-mono text-ui tabular-nums text-foreground">{value}</div>
     </div>
   );
+}
+
+/** 输出速率（与 TUI `usage_tps` 同口径）：有 gen_ms 优先，否则无 ttft 采样时退回 active_ms。 */
+function outputTps(summary: ModelUsageSummary): string {
+  const output = summary.output_tokens;
+  if (!output) return "—";
+  const genMs = summary.gen_ms ?? 0;
+  const ms = genMs > 0 ? genMs : (summary.ttft_calls ?? 0) === 0 ? summary.active_ms : 0;
+  if (ms <= 0) return "—";
+  return `${((output * 1000) / ms).toFixed(1)} tok/s`;
 }
 
 function UsageCard({ summary, title }: { summary: ModelUsageSummary; title: string }) {
@@ -337,6 +347,7 @@ function UsageCard({ summary, title }: { summary: ModelUsageSummary; title: stri
         />
         <Metric label={t("it.gen_ms")} value={formatDuration(summary.gen_ms ?? 0)} />
         <Metric label={t("it.active_ms")} value={formatDuration(summary.active_ms)} />
+        <Metric label={t("it.tps")} value={outputTps(summary)} className="col-span-2" />
       </div>
     </section>
   );

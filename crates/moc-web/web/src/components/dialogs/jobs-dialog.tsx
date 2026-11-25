@@ -16,6 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { formatDuration } from "@/lib/format";
 import { t, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
@@ -37,9 +38,7 @@ function statusClass(job: JobInfo): string {
 }
 
 function elapsed(job: JobInfo, now: number): string {
-  const ms = job.duration_ms ?? Math.max(0, now - job.started_at_ms);
-  const seconds = Math.floor(ms / 1000);
-  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return formatDuration(job.duration_ms ?? Math.max(0, now - job.started_at_ms));
 }
 
 export function JobsDialog({

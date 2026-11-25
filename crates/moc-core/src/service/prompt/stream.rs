@@ -44,6 +44,47 @@ impl TextSpans {
     }
 }
 
+/// 本次生成中思考阶段的墙钟耗时，随响应落库供前后端历史回放还原。
+///
+/// 首个非空 `ReasoningDelta` 启动计时，正文、工具调用或响应结束时收口；
+/// 若响应内有多段思考，累加各段时长。未收到非空思考增量时返回 `None`。
+#[derive(Default)]
+pub(super) struct ReasoningTiming {
+    started_at: Option<u64>,
+    elapsed_ms: u64,
+    observed: bool,
+}
+
+impl ReasoningTiming {
+    pub(super) fn observe(&mut self, event: &StreamEvent, now: u64) {
+        match event {
+            StreamEvent::ReasoningDelta { text, .. } if !text.is_empty() => {
+                self.observed = true;
+                if self.started_at.is_none() {
+                    self.started_at = Some(now);
+                }
+            }
+            StreamEvent::TextDelta { text, .. } if !text.is_empty() => self.close(now),
+            StreamEvent::ToolCallStart { .. }
+            | StreamEvent::ToolCallArgumentsDelta { .. }
+            | StreamEvent::ToolCallSnapshot { .. }
+            | StreamEvent::Done { .. } => self.close(now),
+            _ => {}
+        }
+    }
+
+    fn close(&mut self, now: u64) {
+        if let Some(started) = self.started_at.take() {
+            self.elapsed_ms = self.elapsed_ms.saturating_add(now.saturating_sub(started));
+        }
+    }
+
+    pub(super) fn into_duration_ms(mut self, now: u64) -> Option<u64> {
+        self.close(now);
+        self.observed.then_some(self.elapsed_ms)
+    }
+}
+
 pub(super) async fn forward_event(
     update: &moc_protocol::UpdateSink,
     session_id: &str,
@@ -104,5 +145,30 @@ mod tests {
         spans.observe(&text(1, "d"), 6);
         let span = |start_ms, end_ms| TextSpan { start_ms, end_ms };
         assert_eq!(spans.into_spans(), [span(4, 6), span(2, 5)]);
+    }
+
+    #[test]
+    fn reasoning_timing_tracks_streaming_window_and_skips_empty_responses() {
+        let mut empty = ReasoningTiming::default();
+        empty.observe(&text(0, "hi"), 10);
+        assert_eq!(empty.into_duration_ms(20), None);
+
+        let mut timing = ReasoningTiming::default();
+        timing.observe(
+            &StreamEvent::ReasoningDelta {
+                index: 0,
+                text: "step 1".into(),
+            },
+            100,
+        );
+        timing.observe(
+            &StreamEvent::ToolCallStart {
+                index: 1,
+                id: "c1".into(),
+                name: "bash".into(),
+            },
+            1_350,
+        );
+        assert_eq!(timing.into_duration_ms(2_000), Some(1_250));
     }
 }

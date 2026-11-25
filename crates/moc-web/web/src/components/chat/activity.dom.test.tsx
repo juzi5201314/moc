@@ -40,7 +40,10 @@ it("execute 生成时简略可见，原位执行后保留单条展开", () => {
 });
 
 const originalDetail = usePrefs.getState().toolDetail;
-afterEach(() => usePrefs.setState({ toolDetail: originalDetail }));
+const originalThinkingDetail = usePrefs.getState().thinkingDetail;
+afterEach(() =>
+  usePrefs.setState({ toolDetail: originalDetail, thinkingDetail: originalThinkingDetail }),
+);
 
 function Shortcuts() {
   useGlobalShortcuts();
@@ -177,7 +180,7 @@ it("可折叠行的标题钉在滚动容器顶部，嵌套子工具与状态行�
     />,
   );
   // 顶层可折叠行钉住；点击仍走原有折叠路径。
-  const thinking = view.getByRole("button", { name: /Think/ });
+  const thinking = view.getByRole("button", { name: /Thought/ });
   expect(thinking.parentElement?.className).toContain("sticky");
   const bash = view.getByRole("button", { name: /ls/ });
   expect(bash.parentElement?.className).toContain("sticky");
@@ -280,4 +283,77 @@ it("bash 中段归档提示在隐藏和简略档都可见，且不会被重复�
     expect(view.queryByText(/有提示|有警告/)).toBeNull();
     view.unmount();
   }
+});
+
+it("工具名、思考行耗时与 token、毫秒级耗时和重定向样式与 TUI 对齐", () => {
+  usePrefs.setState({ toolDetail: "brief", thinkingDetail: "hidden" });
+  const view = render(
+    <ActivityGroup
+      blocks={[
+        {
+          kind: "reasoning",
+          id: "r1",
+          text: "先查实现",
+          durationMs: 1200,
+          tokens: 420,
+        },
+        { kind: "reasoning", id: "r-old", text: "旧会话思考" },
+        tool("bash", {
+          id: "b1",
+          arguments: '{"command":"cargo test"}',
+          result: "ok",
+          durationMs: 161,
+        }),
+        tool("mcp__fs__read_file", {
+          id: "m1",
+          arguments: '{"path":"a.rs"}',
+          result: "ok",
+        }),
+        tool("read", { id: "rd1", toolCallId: "rd1", batchId: "b", arguments: '{"path":"a.ts"}' }),
+        tool("read", { id: "rd2", toolCallId: "rd2", batchId: "b", arguments: '{"path":"b.ts"}' }),
+        tool("bash", {
+          id: "pb",
+          status: "error",
+          isError: true,
+          arguments: '{"command":"cat a.rs"}',
+          result: '[E_PREFER_BUILTIN] Use read instead\n- read {"path":"a.rs"}',
+        }),
+        {
+          kind: "bash",
+          id: "ub1",
+          command: "ls",
+          excludeFromContext: true,
+          output: "a.rs",
+          atMs: 1,
+        },
+        {
+          kind: "agent-message",
+          id: "am1",
+          from: "Scout",
+          delivery: "injected",
+          body: "found it",
+          atMs: 2,
+        },
+      ]}
+      live={false}
+      sessionId="tui-parity"
+    />,
+  );
+  expect(view.getByText("Thought for 1.2s")).toBeTruthy();
+  expect(view.getByText("· 420 tokens")).toBeTruthy();
+  expect(view.container.textContent).not.toContain("t/s");
+  expect(view.getByText("Thought")).toBeTruthy();
+  expect(view.getAllByText("Bash")).toHaveLength(2);
+  expect(view.getByText("161ms")).toBeTruthy();
+  expect(view.getByText("mcp__fs__read_file")).toBeTruthy();
+  expect(view.getByText("Read (2)")).toBeTruthy();
+  expect(view.getByText("!! Bash · excluded from context")).toBeTruthy();
+  expect(view.getByText("IRC")).toBeTruthy();
+  expect(view.getByText("◀ Scout")).toBeTruthy();
+  expect(view.getByText("injected")).toBeTruthy();
+  // [E_PREFER_BUILTIN] 标题使用警告色而非 destructive 红
+  const pbButton = view.getByRole("button", { name: /Bash cat a\.rs/ });
+  expect(pbButton.parentElement?.innerHTML).toContain("text-warn");
+  expect(pbButton.parentElement?.innerHTML).not.toContain("text-destructive");
+  view.unmount();
 });

@@ -3,7 +3,6 @@ import { recordBlockChange } from "@/lib/block-changes";
 import type { Block, ToolBlock } from "@/lib/transcript-model";
 import {
   activitySnippet,
-  activityVerb,
   createTurnGrouper,
   formatDuration,
   groupTurns,
@@ -191,21 +190,7 @@ describe("summarizeActivity", () => {
   });
 });
 
-describe("activityVerb / activitySnippet", () => {
-  it("识别常见工具动词", () => {
-    expect(activityVerb(tool("bash"))).toBe("Run");
-    expect(activityVerb(tool("execute"))).toBe("Run code");
-    expect(activityVerb(tool("sidekick"))).toBe("Subagent");
-    expect(activityVerb(tool("read_file"))).toBe("Read");
-    expect(activityVerb(tool("write_file"))).toBe("Write");
-    expect(activityVerb(tool("mcp__fs__str_replace_editor"))).toBe("Edit");
-    expect(activityVerb(tool("grep"))).toBe("Search");
-    expect(activityVerb(tool("web_search"))).toBe("Web search");
-    expect(activityVerb(tool("web_fetch"))).toBe("Fetch");
-    expect(activityVerb(tool("some_unknown_tool"))).toBe("Call tool");
-    expect(activityVerb({ kind: "text", id: "t1", text: "x" })).toBeNull();
-  });
-
+describe("activitySnippet", () => {
   it("摘要折叠空白并截断", () => {
     const long = "a".repeat(120);
     expect(activitySnippet({ kind: "reasoning", id: "r1", text: long })).toHaveLength(81);
@@ -239,9 +224,10 @@ describe("activityVerb / activitySnippet", () => {
 });
 
 describe("formatDuration", () => {
-  it("按分秒输出", () => {
+  it("按时分秒输出", () => {
     expect(formatDuration(23_000)).toBe("23s");
     expect(formatDuration(737_000)).toBe("12m 17s");
+    expect(formatDuration(3_900_000)).toBe("1h 5m");
     expect(formatDuration(0)).toBe("0s");
   });
 });

@@ -4,10 +4,14 @@ import {
   findFiles,
   grepCountText,
   groupActivity,
+  parseAskAnswers,
   parseGrep,
+  parseSidekickResult,
   parseTodo,
+  preferBuiltinRedirect,
   previewDiff,
   toggledLevel,
+  toolDisplayName,
   toolHeadline,
   toolNotices,
 } from "@/lib/tool-view";
@@ -166,5 +170,108 @@ describe("groupActivity", () => {
       tool("grep", { toolCallId: "b", batchId: "e1" }),
     ]);
     expect(items.every((item) => item.kind === "block")).toBe(true);
+  });
+});
+
+describe("toolDisplayName 与 TUI 对齐摘要", () => {
+  it("内置工具映射为 PascalCase / 专用名，MCP 与插件保留原名", () => {
+    expect(toolDisplayName("bash")).toBe("Bash");
+    expect(toolDisplayName("bash", { exclude_from_context: false })).toBe("! Bash");
+    expect(toolDisplayName("bash", { exclude_from_context: true })).toBe(
+      "!! Bash · excluded from context",
+    );
+    expect(toolDisplayName("read")).toBe("Read");
+    expect(toolDisplayName("execute")).toBe("Execute");
+    expect(toolDisplayName("web_fetch")).toBe("WebFetch");
+    expect(toolDisplayName("message_agent")).toBe("IRC");
+    expect(toolDisplayName("sidekick")).toBe("Sidekick");
+    expect(toolDisplayName("create_workflow")).toBe("CreateWorkflow");
+    expect(toolDisplayName("mcp__fs__read_file")).toBe("mcp__fs__read_file");
+    expect(toolDisplayName("custom_plugin_tool")).toBe("custom_plugin_tool");
+  });
+
+  it("todo 汇总 op 与完成/放弃计数，read 保留目录 glob，skill 提取描述", () => {
+    const todo = tool("todo", {
+      arguments: '{"op":"init","list":[{"phase":"P1","items":["a","b","c"]}]}',
+      result: "P1\n  [x] a\n  [-] b\n  [ ] c\n",
+    });
+    expect(toolHeadline(todo)).toEqual({ target: "init 3 tasks", stat: "2/3" });
+
+    const dirRead = tool("read", { arguments: '{"path":"src","glob":["*.ts","*.tsx"]}' });
+    expect(toolHeadline(dirRead)).toEqual({ target: "src", scope: "*.ts *.tsx" });
+
+    const skill = tool("skill", {
+      arguments: '{"name":"rust"}',
+      result: "Skill description: Rust conventions\nbody",
+    });
+    expect(toolHeadline(skill)).toEqual({ target: "rust", scope: "Rust conventions" });
+  });
+
+  it("识别 prefer_builtin 重定向及子代理/ask 结构化结果", () => {
+    const redirected = tool("bash", {
+      status: "error",
+      isError: true,
+      result: '[E_PREFER_BUILTIN] Use read instead\n- read {"path":"a.rs"}',
+    });
+    expect(preferBuiltinRedirect(redirected)).toBe(true);
+
+    const msg = tool("message_agent", {
+      arguments: '{"target":"all","message":"hi"}',
+      result: JSON.stringify({
+        receipts: [
+          { agent_id: "a1", title: "Worker A", outcome: "injected" },
+          { agent_id: "a2", title: "Worker B", outcome: "failed", error: "stopped" },
+        ],
+      }),
+    });
+    expect(toolHeadline(msg)).toEqual({
+      target: "▶ all",
+      stat: "broadcast · 1 delivered · 1 failed",
+      statError: true,
+    });
+
+    const wait = tool("wait_agent", {
+      arguments: '{"agent_ids":["a1","a2"]}',
+      result: JSON.stringify({
+        agents: [],
+        messages_pending: true,
+        settled: false,
+        timed_out: true,
+      }),
+    });
+    expect(toolHeadline(wait)).toEqual({
+      target: "Waiting for 2 agents",
+      stat: "new messages · timed out",
+      statWarn: true,
+    });
+
+    const sidekick = parseSidekickResult(
+      JSON.stringify({
+        status: "completed",
+        delivery: "sync",
+        model: "gpt",
+        result: {
+          status: "ok",
+          changes: [{ path: "a.rs" }],
+          verification: [{ outcome: "passed" }, { outcome: "failed" }],
+          open_issues: ["check edge"],
+        },
+        report: "done",
+      }),
+    );
+    expect(sidekick?.structured).toEqual({
+      status: "ok",
+      changesCount: 1,
+      passed: 1,
+      failed: 1,
+      notRun: 0,
+      openIssues: ["check edge"],
+    });
+
+    const ask = tool("ask", {
+      arguments: '{"questions":[{"id":"q1","header":"Mode","question":"Pick?"}]}',
+      result: "User answers:\nq1: Fast",
+    });
+    expect(parseAskAnswers(ask)).toEqual([{ key: "Mode", answer: "Fast", unanswered: false }]);
   });
 });

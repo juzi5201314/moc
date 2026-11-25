@@ -21,13 +21,16 @@ import {
   grepCounts,
   groupActivity,
   headLines,
+  parseArgs,
+  preferBuiltinRedirect,
   toggledLevel,
+  toolDisplayName,
   toolExpandable,
   toolFailed,
   toolHeadline,
 } from "@/lib/tool-view";
 import type { Block, ToolBlock } from "@/lib/transcript-model";
-import { activitySnippet, activityVerb } from "@/lib/turn";
+import { activitySnippet } from "@/lib/turn";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import type { ImageSource, JobInfo, JobResult } from "@/protocol/types";
@@ -42,9 +45,9 @@ export function imageSrc(source: ImageSource): string {
     : `data:${source.Base64.media_type};base64,${source.Base64.data}`;
 }
 
-/** 尾注里的耗时：不足 1 秒的不显示。 */
+/** 尾注里的耗时：与 TUI `labels::duration` 一致，不足 1 秒按毫秒展示。 */
 function Duration({ ms }: { ms?: number }) {
-  if (ms === undefined || ms < 1000) return null;
+  if (ms === undefined) return null;
   return <span className="text-2xs tabular-nums text-text-tertiary">{formatDuration(ms)}</span>;
 }
 
@@ -84,6 +87,7 @@ function RowHeader({
   targetTitle,
   scope,
   failed,
+  warn,
   emphasized,
   suffix,
   action,
@@ -105,6 +109,7 @@ function RowHeader({
   onTargetClick?: () => void;
   scope?: string;
   failed?: boolean;
+  warn?: boolean;
   emphasized?: boolean;
   suffix?: ReactNode;
   action?: ReactNode;
@@ -155,32 +160,39 @@ function RowHeader({
           "shrink-0",
           emphasized && "font-medium text-foreground",
           failed && "text-destructive",
+          warn && !failed && "text-warn",
           pulse && "animate-pulse",
         )}
       >
         {verb}
       </span>
-      <span className={cn("flex min-w-0 items-baseline gap-2 truncate", !inlineSuffix && "flex-1")}>
-        {target &&
-          (onTargetClick ? (
-            <button
-              type="button"
-              className={cn("relative min-w-0 truncate text-left hover:text-foreground")}
-              title={targetTitle ?? target}
-              onClick={onTargetClick}
-            >
-              {target}
-            </button>
-          ) : (
-            <span
-              className={cn("min-w-0 truncate", emphasized && "text-muted-foreground")}
-              title={targetTitle ?? target}
-            >
-              {target}
-            </span>
-          ))}
-        {scope && <span className="shrink-0 truncate text-xs text-text-tertiary/70">{scope}</span>}
-      </span>
+      {(target || scope || !inlineSuffix) && (
+        <span
+          className={cn("flex min-w-0 items-baseline gap-2 truncate", !inlineSuffix && "flex-1")}
+        >
+          {target &&
+            (onTargetClick ? (
+              <button
+                type="button"
+                className={cn("relative min-w-0 truncate text-left hover:text-foreground")}
+                title={targetTitle ?? target}
+                onClick={onTargetClick}
+              >
+                {target}
+              </button>
+            ) : (
+              <span
+                className={cn("min-w-0 truncate", emphasized && "text-muted-foreground")}
+                title={targetTitle ?? target}
+              >
+                {target}
+              </span>
+            ))}
+          {scope && (
+            <span className="shrink-0 truncate text-xs text-text-tertiary/70">{scope}</span>
+          )}
+        </span>
+      )}
       {!inlineSuffix && action && <span className="relative shrink-0">{action}</span>}
       <span className="flex shrink-0 items-center gap-1.5">
         {failed && <CircleAlertIcon className="size-3.5 text-destructive" />}
@@ -204,11 +216,6 @@ function Body({ children }: { children: ReactNode }) {
 }
 
 // ---------- 思考 ----------
-
-/** 每秒 token 数：与 TUI 的 `thinking_tokens_per_second` 同一套四舍五入。 */
-function tokenRate(tokens: number, ms: number): number {
-  return Math.floor((tokens * 1000 + Math.floor(ms / 2)) / ms);
-}
 
 /**
  * 简略档流式中的思考：整段 Markdown 照常渲染（不截断源文本，免得切坏语法），
@@ -258,9 +265,21 @@ function ReasoningRow({
   const t = useT();
   const [level, setLevel] = useState(axis);
   const streaming = live && block.durationMs === undefined;
+  const now = useNow(streaming);
   const hasText = block.text.trim().length > 0;
-  const rate =
-    block.tokens && block.durationMs ? tokenRate(block.tokens, block.durationMs) : undefined;
+  const elapsedMs =
+    streaming && block.startedAt !== undefined ? Math.max(0, now - block.startedAt) : undefined;
+  const verb = streaming
+    ? t("verb.thinking_ing")
+    : block.durationMs !== undefined
+      ? t("act.thought_for", { n: formatDuration(block.durationMs) })
+      : t("verb.thinking");
+  const tokensText =
+    !streaming && block.tokens && block.tokens > 0
+      ? t(block.tokens === 1 ? "act.tokens_one" : "act.tokens_many", {
+          n: block.tokens.toLocaleString(),
+        })
+      : undefined;
   // 完整档展开全文；简略档只在流式中露出末尾，结束后收成标题行；隐藏档只有标题。
   const body = !hasText ? null : level === "full" ? (
     <ThinkingProse text={block.text} animating={streaming} />
@@ -271,20 +290,20 @@ function ReasoningRow({
     <div>
       <RowHeader
         atMs={block.atMs}
-        verb={streaming ? t("verb.thinking_ing") : t("verb.thinking")}
+        verb={verb}
         target={body || level === "hidden" ? undefined : activitySnippet(block, 160)}
         pulse={streaming}
         interactive={hasText}
         open={level === "full"}
         sticky={hasText}
+        inlineSuffix
         onToggle={() => setLevel(toggledLevel(axis, level))}
         suffix={
-          <>
-            {rate !== undefined && (
-              <span className="text-2xs tabular-nums text-text-tertiary">{rate} t/s</span>
-            )}
-            <Duration ms={block.durationMs} />
-          </>
+          streaming ? (
+            <Duration ms={elapsedMs} />
+          ) : tokensText ? (
+            <span className="text-2xs tabular-nums text-text-tertiary">· {tokensText}</span>
+          ) : undefined
         }
       />
       {body && <div className="ml-0.5 border-l border-border-subtle pt-0.5 pb-2 pl-3">{body}</div>}
@@ -323,6 +342,7 @@ function toolSuffix(
   tool: ToolBlock,
   stat?: string,
   statError?: boolean,
+  statWarn?: boolean,
   now = Date.now(),
 ): ReactNode {
   if (tool.preview) {
@@ -332,10 +352,19 @@ function toolSuffix(
       </span>
     );
   }
+  const bgBadge =
+    tool.job &&
+    tool.job.origin !== "foreground" &&
+    (tool.job.status === "running" || tool.job.status === "killing") ? (
+      <span className="font-mono text-2xs text-text-tertiary">
+        {t("act.bg_job", { id: tool.job.job_id })}
+      </span>
+    ) : null;
   if (tool.status === "running") {
-    const elapsed = tool.job?.started_at_ms ? now - tool.job.started_at_ms : undefined;
+    const elapsed = tool.job?.started_at_ms ? Math.max(0, now - tool.job.started_at_ms) : undefined;
     return (
       <>
+        {bgBadge}
         {tool.awaitingPermission ? (
           <span className="text-2xs text-warn">{t("act.wait_auth")}</span>
         ) : (
@@ -352,11 +381,12 @@ function toolSuffix(
   const total = addDiffTotals([tool], { added: 0, removed: 0 });
   return (
     <>
+      {bgBadge}
       {stat && (
         <span
           className={cn(
             "text-2xs tabular-nums",
-            statError ? "text-destructive" : "text-text-tertiary",
+            statError ? "text-destructive" : statWarn ? "text-warn" : "text-text-tertiary",
           )}
         >
           {stat}
@@ -384,11 +414,20 @@ function ToolRow({
   const t = useT();
   const [level, setLevel] = useState(axis);
   const now = useNow(tool.status === "running" && Boolean(tool.job));
+  const args = parseArgs(tool.arguments);
   const headline = toolHeadline(tool);
-  const failed = toolFailed(tool);
+  const redirect = preferBuiltinRedirect(tool);
+  const failed = toolFailed(tool) && !redirect;
   const interactive =
     toolExpandable(tool) &&
-    Boolean(tool.preview || tool.result || tool.liveOutput || tool.diff || tool.arguments.trim());
+    Boolean(
+      tool.preview ||
+        tool.result ||
+        tool.liveOutput ||
+        tool.diff ||
+        tool.arguments.trim() ||
+        tool.progress?.length,
+    );
   const toggle = () => setLevel(toggledLevel(axis, level));
   const body = toolBody(tool, level, () => setLevel("full"));
   // read / edit / write 的目标路径可点击：在文件分页打开（read 带 offset 行号）。
@@ -404,10 +443,13 @@ function ToolRow({
       if (parsed) openFile(sessionId, parsed.target, { line: parsed.line ?? offset });
     };
   })();
+  // wait_agent / sidekick 的进度行已由 toolBody 渲染，避免在 ToolExtras 中重复展示。
+  const showExtraProgress =
+    tool.name !== "wait_agent" && tool.name !== "sidekick" && Boolean(tool.progress?.length);
   const extras =
     level !== "hidden" &&
     (level === "full" || bodyPolicy(tool.name) !== "summary" || tool.name === "web_fetch") &&
-    (tool.images.length > 0 || Boolean(tool.progress?.length));
+    (tool.images.length > 0 || showExtraProgress);
   const canBackground = tool.job?.origin === "foreground" && tool.job.status === "running";
   const background = () => {
     if (!tool.job) return;
@@ -461,7 +503,7 @@ function ToolRow({
     <div>
       <RowHeader
         atMs={sticky ? tool.atMs : undefined}
-        verb={headline.verb ?? activityVerb(tool) ?? t("verb.tools")}
+        verb={headline.verb ?? toolDisplayName(tool.name, args)}
         // 可点击的文件目标只显示文件名（含行范围），与合并组一致；完整路径留给悬停提示，点击仍按完整路径打开。
         target={
           targetClick
@@ -474,8 +516,9 @@ function ToolRow({
         targetTitle={targetClick ? headline.target : undefined}
         scope={headline.scope}
         failed={failed}
+        warn={redirect}
         pulse={tool.status === "generating"}
-        suffix={toolSuffix(tool, headline.stat, headline.statError, now)}
+        suffix={toolSuffix(tool, headline.stat, headline.statError, headline.statWarn, now)}
         inlineSuffix
         action={headerAction}
         interactive={interactive}
@@ -487,7 +530,7 @@ function ToolRow({
       {(body || extras) && (
         <Body>
           {body}
-          {extras && <ToolExtras tool={tool} />}
+          {extras && <ToolExtras tool={tool} showProgress={showExtraProgress} />}
         </Body>
       )}
       {tool.children.length > 0 && (
@@ -514,11 +557,11 @@ function argOffset(tool: ToolBlock): number | undefined {
 }
 
 /** 子代理进度行与工具返回的图片。 */
-function ToolExtras({ tool }: { tool: ToolBlock }) {
+function ToolExtras({ tool, showProgress }: { tool: ToolBlock; showProgress: boolean }) {
   const t = useT();
   return (
     <>
-      {tool.progress && tool.progress.length > 0 && (
+      {showProgress && tool.progress && tool.progress.length > 0 && (
         <div className="space-y-1 rounded-lg bg-code px-3 py-2 text-xs">
           {tool.progress.map((row) => (
             <div key={row.agent_id} className="flex items-center gap-2">
@@ -565,14 +608,6 @@ function ToolExtras({ tool }: { tool: ToolBlock }) {
   );
 }
 
-/** 合并行的动作文案：`读取 4 个文件`。 */
-const GROUP_VERB: Record<string, (n: number) => string> = {
-  read: (n) => t("grp.read", { n }),
-  grep: (n) => t("grp.grep", { n }),
-  find: (n) => t("grp.find", { n }),
-  web_fetch: (n) => t("grp.web_fetch", { n }),
-};
-
 /** 合并行尾注：同类计数求和。 */
 function groupStat(name: string, tools: ToolBlock[]): string | undefined {
   const done = tools.filter((tool) => tool.result !== undefined && !toolFailed(tool));
@@ -616,9 +651,7 @@ function ToolGroupRow({
     .map((tool) => toolHeadline(tool).target.split(/[\\/]/).pop() ?? "")
     .filter(Boolean)
     .join("  ");
-  const verb =
-    GROUP_VERB[name]?.(tools.length) ??
-    t("grp.times", { verb: activityVerb(tools[0]) ?? t("verb.tools"), n: tools.length });
+  const verb = t("grp.times", { verb: toolDisplayName(name), n: tools.length });
   const stat = groupStat(name, tools);
   return (
     <div>
@@ -667,7 +700,10 @@ function bashAsTool(block: Extract<Block, { kind: "bash" }>): ToolBlock {
     id: block.id,
     toolCallId: block.toolCallId ?? block.id,
     name: "bash",
-    arguments: JSON.stringify({ command: block.command }),
+    arguments: JSON.stringify({
+      command: block.command,
+      exclude_from_context: Boolean(block.excludeFromContext),
+    }),
     status:
       block.output === undefined && !block.job?.status?.includes("exited")
         ? "running"
@@ -782,15 +818,34 @@ function AgentReportRow({
   const head = headLines(block.body, BRIEF_BODY_ROWS);
   const lines = level === "full" ? block.body : head.lines.join("\n");
   const result = block.kind === "agent-result";
+  const delivery = result ? undefined : block.delivery;
   return (
     <div>
       <RowHeader
         atMs={block.atMs}
-        verb={result ? t("act.agent_result") : t("act.agent_msg")}
-        target={result ? block.meta.title : block.from}
-        failed={result && block.meta.status === "failed"}
+        verb={result ? t("act.agent_result") : t("act.irc")}
+        target={result ? block.meta.title : `◀ ${block.from}`}
+        failed={result ? block.meta.status === "failed" : delivery === "failed"}
         emphasized={result}
-        suffix={result && <span className="text-xs">{block.meta.status}</span>}
+        inlineSuffix={!result}
+        suffix={
+          result ? (
+            <span className="text-xs">{block.meta.status}</span>
+          ) : delivery ? (
+            <span
+              className={cn(
+                "text-2xs",
+                delivery === "failed"
+                  ? "text-destructive"
+                  : delivery === "injected"
+                    ? "text-brand"
+                    : "text-text-tertiary",
+              )}
+            >
+              {delivery}
+            </span>
+          ) : undefined
+        }
         interactive
         open={level === "full"}
         sticky
@@ -837,6 +892,8 @@ function GoalRoundRow({
       <RowHeader
         atMs={block.atMs}
         verb={t("act.goal_round", { n: block.round })}
+        inlineSuffix
+        suffix={<span className="text-2xs text-text-tertiary">{t("act.goal_auto")}</span>}
         interactive
         open={level === "full"}
         sticky

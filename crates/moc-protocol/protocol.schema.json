@@ -4632,6 +4632,24 @@
           "description": "生成该响应的模型选择器（`provider/model[:level]`）。",
           "type": "string"
         },
+        "reasoning_duration_ms": {
+          "description": "本次响应思考阶段总耗时（毫秒）；无思考内容或旧会话日志为 `None`。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reasoning_tokens": {
+          "description": "本次响应上游报告的思考 token 数（存在思考内容且非零时记录）；无思考或旧会话日志为 `None`。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "text_spans": {
           "description": "各正文段的流式时间窗，与 `message` 中的 Text 部分按序一一对应。",
           "items": {

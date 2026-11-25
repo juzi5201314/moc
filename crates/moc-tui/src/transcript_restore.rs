@@ -89,6 +89,7 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
             Role::Assistant => {
                 let batch_id =
                     (message.tool_calls().count() > 1).then(|| format!("history-{}", record.id));
+                let mut last_thinking_index = None;
                 for part in &message.content {
                     match part {
                         ContentPart::Text(text) => {
@@ -98,6 +99,7 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
                             if let Some(text) = reasoning.display_text()
                                 && !text.trim().is_empty()
                             {
+                                last_thinking_index = Some(blocks.len());
                                 blocks.push(Entry::new(Block::Thinking {
                                     text,
                                     reasoning_tokens: None,
@@ -128,6 +130,17 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
                         }
                         _ => {}
                     }
+                }
+                if let (Some(index), Some(response)) =
+                    (last_thinking_index, record.response.as_ref())
+                    && let Block::Thinking {
+                        reasoning_tokens,
+                        duration_ms,
+                        ..
+                    } = &mut blocks[index].block
+                {
+                    *reasoning_tokens = response.reasoning_tokens;
+                    *duration_ms = response.reasoning_duration_ms;
                 }
             }
             Role::Tool => {
@@ -432,5 +445,37 @@ mod tests {
             }
             other => panic!("代理消息必须恢复成卡片：{other:?}"),
         }
+    }
+
+    #[test]
+    fn restores_reasoning_duration_and_tokens_from_response_meta() {
+        let mut record = entry(
+            Message {
+                role: Role::Assistant,
+                content: moc_protocol::message_content![
+                    ContentPart::Reasoning(moc_protocol::ReasoningBlock::Text {
+                        text: "先查实现".into(),
+                        signature: None,
+                    }),
+                    ContentPart::Text("完成".into()),
+                ],
+            },
+            None,
+        );
+        record.response = Some(moc_protocol::ResponseMeta {
+            model: "test/m".into(),
+            text_spans: Vec::new(),
+            reasoning_duration_ms: Some(1_450),
+            reasoning_tokens: Some(320),
+        });
+        let blocks = blocks_from_entries(&[record]);
+        assert!(matches!(
+            &blocks[0].block,
+            Block::Thinking {
+                duration_ms: Some(1_450),
+                reasoning_tokens: Some(320),
+                ..
+            }
+        ));
     }
 }
