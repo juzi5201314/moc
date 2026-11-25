@@ -43,6 +43,18 @@ function isObject(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** 比较平面键值表（如定价、headers）是否语义一致；空对象与未设置视为等价。 */
+function sameFlatRecord(a: unknown, b: Record<string, string | number> | undefined): boolean {
+  if (b === undefined) {
+    return a === undefined || (isObject(a) && Object.keys(a).length === 0);
+  }
+  if (!isObject(a)) return false;
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return bKeys.every((key) => a[key] === b[key]);
+}
+
 // ---------- API Key 输入框（带显隐按钮与 env:/! 引用明文识别） ----------
 
 export function ApiKeyInput({
@@ -214,7 +226,7 @@ export function TokenCountEditor({
                 onClick={() => {
                   setDraft(String(preset.value));
                   onError(null);
-                  void writeField(field.path, preset.value);
+                  if (explicit !== preset.value) void writeField(field.path, preset.value);
                 }}
                 className={cn(
                   "rounded-md px-1.5 py-0.5 font-mono text-2xs transition-colors",
@@ -295,7 +307,7 @@ export function PricingEditor({
       return;
     }
     onError(null);
-    void writeField(path, parsed);
+    if (!sameFlatRecord(explicit, parsed)) void writeField(path, parsed);
   };
 
   const fields: { key: keyof PricingDraft; label: string }[] = [
@@ -655,7 +667,9 @@ export function KeyValueEditor({
       const v = row.value.trim();
       if (k && v) result[k] = v;
     }
-    void writeField(path, Object.keys(result).length > 0 ? result : undefined);
+    const nextValue = Object.keys(result).length > 0 ? result : undefined;
+    if (sameFlatRecord(explicit, nextValue)) return;
+    void writeField(path, nextValue);
   };
 
   const addRow = () => {

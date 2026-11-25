@@ -86,7 +86,9 @@ function Segmented<T extends string>({
         <button
           key={option.value}
           type="button"
-          onClick={() => onChange(option.value)}
+          onClick={() => {
+            if (option.value !== value) onChange(option.value);
+          }}
           className={cn(
             "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs transition-colors",
             value === option.value

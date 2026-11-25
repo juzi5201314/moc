@@ -1,10 +1,12 @@
 import { cleanup, fireEvent, render, within } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useI18n } from "@/lib/i18n";
+import { rpc } from "@/protocol/client";
 import type { SettingsDocument } from "@/protocol/types";
 import { usePrefs } from "@/store/prefs";
 import { useUi } from "@/store/ui";
+import { KeyValueEditor, PricingEditor } from "./provider-widgets";
 import { SettingsDialog } from "./settings-dialog";
 import { useSettings } from "./settings-store";
 
@@ -240,4 +242,54 @@ it("搜索可直达供应商与模型，详情支持模型钻取、通配默认�
   // 切到通配默认规则视图可见已有规则
   fireEvent.click(view.getByRole("button", { name: /Defaults/ }));
   expect(view.getByText("gpt-*")).toBeTruthy();
+});
+
+it("未改动定价、键值表或重复点击当前语言时不触发配置保存", () => {
+  const callSpy = vi.spyOn(rpc, "call").mockResolvedValue({ kind: "settings", data: doc });
+  try {
+    const langDoc: SettingsDocument = {
+      ...doc,
+      document: { language: "zh" },
+      effective: { language: "zh" },
+      fields: [
+        {
+          tab: "general",
+          path: ["language"],
+          label: "Language",
+          description: "UI language",
+          kind: { type: "text" },
+          advanced: false,
+        },
+      ],
+    };
+    useSettings.setState({ docs: { global: langDoc } });
+    const view = openDialog();
+    fireEvent.click(view.getByRole("button", { name: "中文" }));
+    expect(callSpy).not.toHaveBeenCalled();
+
+    const { getByLabelText, getByDisplayValue } = render(
+      <>
+        <PricingEditor
+          path={["providers", "acme", "models", "gpt-5", "pricing"]}
+          explicit={{ input: 1.5, output: 6 }}
+          fallback={undefined}
+          onError={() => undefined}
+        />
+        <KeyValueEditor
+          path={["providers", "acme", "headers"]}
+          explicit={{ "X-Test": "1" }}
+          fallback={undefined}
+        />
+      </>,
+    );
+    const priceInput = getByLabelText("pricing input");
+    fireEvent.focus(priceInput);
+    fireEvent.blur(priceInput);
+    const headerVal = getByDisplayValue("1");
+    fireEvent.focus(headerVal);
+    fireEvent.blur(headerVal);
+    expect(callSpy).not.toHaveBeenCalled();
+  } finally {
+    callSpy.mockRestore();
+  }
 });
