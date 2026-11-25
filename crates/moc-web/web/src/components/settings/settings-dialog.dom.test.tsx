@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useI18n } from "@/lib/i18n";
@@ -289,6 +289,95 @@ it("未改动定价、键值表或重复点击当前语言时不触发配置保�
     fireEvent.focus(headerVal);
     fireEvent.blur(headerVal);
     expect(callSpy).not.toHaveBeenCalled();
+  } finally {
+    callSpy.mockRestore();
+  }
+});
+
+it("通配默认规则支持在列表与详情中重命名并保留原配置，未改动不保存、重名禁用保存", async () => {
+  const initialModels = {
+    "claude-*": { context_window: 200_000 },
+    "gpt-6*": { context_window: 400_000, reasoning: true },
+  };
+  let rev = 1;
+  const savedDocs: Record<string, unknown>[] = [];
+  const callSpy = vi.spyOn(rpc, "call").mockImplementation(async (_method, params) => {
+    const action = params as { action: string; document?: Record<string, unknown> };
+    if (action.action === "save" && action.document) {
+      rev += 1;
+      savedDocs.push(action.document);
+      return {
+        kind: "settings",
+        data: {
+          ...doc,
+          document: action.document,
+          effective: action.document,
+          revision: String(rev),
+        },
+      };
+    }
+    return { kind: "settings", data: doc };
+  });
+  try {
+    const defaultsDoc: SettingsDocument = {
+      ...doc,
+      document: { defaults: { models: initialModels } },
+      effective: { defaults: { models: initialModels } },
+    };
+    useSettings.setState({ docs: { global: defaultsDoc } });
+    const view = openDialog();
+    const nav = within(view.getByRole("navigation"));
+    fireEvent.click(nav.getByRole("button", { name: "Providers" }));
+    fireEvent.click(view.getByRole("button", { name: /Defaults/ }));
+
+    // 列表行内点击重命名：未改动直接保存不发请求
+    const renameButtons = view.getAllByRole("button", { name: "Rename pattern" });
+    fireEvent.click(renameButtons[1]);
+    const rowInput = view.getByRole("textbox", { name: "Rename pattern" }) as HTMLInputElement;
+    expect(rowInput.value).toBe("gpt-6*");
+    fireEvent.click(view.getByRole("button", { name: "Save" }));
+    expect(callSpy).not.toHaveBeenCalled();
+
+    // 改成已存在模式时按钮禁用并提示 Exists
+    fireEvent.click(view.getAllByRole("button", { name: "Rename pattern" })[1]);
+    fireEvent.change(view.getByRole("textbox", { name: "Rename pattern" }), {
+      target: { value: "claude-*" },
+    });
+    const existsBtn = view.getByRole("button", { name: "Exists" }) as HTMLButtonElement;
+    expect(existsBtn.disabled).toBe(true);
+
+    // 改为新模式 gpt-5* 并保存：保留原字段并移除旧键
+    fireEvent.change(view.getByRole("textbox", { name: "Rename pattern" }), {
+      target: { value: "gpt-5*" },
+    });
+    fireEvent.click(view.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(view.getByText("gpt-5*")).toBeTruthy());
+    expect(view.queryByText("gpt-6*")).toBeNull();
+    expect(savedDocs[0]).toEqual({
+      defaults: {
+        models: {
+          "claude-*": { context_window: 200_000 },
+          "gpt-5*": { context_window: 400_000, reasoning: true },
+        },
+      },
+    });
+
+    // 进入规则详情页后同样支持重命名，且停留在详情页显示新标题
+    fireEvent.click(view.getByRole("button", { name: /gpt-5\*/ }));
+    expect(view.getByRole("heading", { name: "gpt-5*" })).toBeTruthy();
+    fireEvent.click(view.getByRole("button", { name: "Rename pattern" }));
+    const detailInput = view.getByRole("textbox", { name: "Rename pattern" }) as HTMLInputElement;
+    fireEvent.change(detailInput, { target: { value: "gpt-5.*" } });
+    fireEvent.keyDown(detailInput, { key: "Enter" });
+    await waitFor(() => expect(view.getByRole("heading", { name: "gpt-5.*" })).toBeTruthy());
+    expect(savedDocs[1]).toEqual({
+      defaults: {
+        models: {
+          "claude-*": { context_window: 200_000 },
+          "gpt-5.*": { context_window: 400_000, reasoning: true },
+        },
+      },
+    });
   } finally {
     callSpy.mockRestore();
   }

@@ -4,11 +4,12 @@ import {
   ArrowLeftIcon,
   CopyIcon,
   ImageIcon,
+  PencilIcon,
   PlusIcon,
   SparklesIcon,
   Trash2Icon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { IconButton } from "@/components/common/icon-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,7 +23,7 @@ import { cn } from "@/lib/utils";
 import type { ConfigField, SettingsDocument } from "@/protocol/types";
 import { FieldList, FieldRow } from "./field";
 import { KeyValueEditor, RequestParamsEditor } from "./provider-widgets";
-import { writeField, writeSettings, writeSettingsWithUndo } from "./settings-store";
+import { useSettings, writeField, writeSettings, writeSettingsWithUndo } from "./settings-store";
 
 type Json = Record<string, unknown>;
 type ModelTab = "general" | "compat" | "params";
@@ -41,6 +42,7 @@ export function ModelEditor({
   siblingIds,
   onBack,
   onCloned,
+  onRename,
   onDeleted,
 }: {
   doc: SettingsDocument;
@@ -52,6 +54,7 @@ export function ModelEditor({
   siblingIds: string[];
   onBack: () => void;
   onCloned?: (newId: string) => void;
+  onRename?: (nextId: string) => Promise<boolean>;
   onDeleted: () => void;
 }) {
   const t = useT();
@@ -59,6 +62,9 @@ export function ModelEditor({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [cloning, setCloning] = useState(false);
   const [cloneName, setCloneName] = useState("");
+  const [renaming, setRenaming] = useState(false);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
 
   const model = getPath(doc.effective, basePath);
   const info = isObject(model) ? model : {};
@@ -135,6 +141,24 @@ export function ModelEditor({
     if (ok) onDeleted();
   };
 
+  const renameTrimmed = renameDraft.trim();
+  const renameDuplicate = renameTrimmed !== title && siblingIds.includes(renameTrimmed);
+
+  const handleRename = async () => {
+    if (!onRename || renameBusy || !renameTrimmed || renameDuplicate) return;
+    if (renameTrimmed === title) {
+      setRenaming(false);
+      return;
+    }
+    setRenameBusy(true);
+    const ok = await onRename(renameTrimmed);
+    setRenameBusy(false);
+    if (ok) {
+      setRenaming(false);
+      setRenameDraft("");
+    }
+  };
+
   const handleClone = async () => {
     const trimmed = cloneName.trim();
     if (!trimmed || siblingIds.includes(trimmed)) return;
@@ -208,10 +232,28 @@ export function ModelEditor({
               />
             </div>
           )}
+          {onRename && (
+            <IconButton
+              label={t("sp.defaults_rename")}
+              size="sm"
+              active={renaming}
+              onClick={() => {
+                setCloning(false);
+                setConfirmDelete(false);
+                setRenameDraft(title);
+                setRenaming((prev) => !prev);
+              }}
+            >
+              <PencilIcon />
+            </IconButton>
+          )}
           <IconButton
             label={t("sp.clone_model")}
             size="sm"
+            active={cloning}
             onClick={() => {
+              setRenaming(false);
+              setConfirmDelete(false);
               setCloneName(nextCopyId(title, siblingIds));
               setCloning((prev) => !prev);
             }}
@@ -232,13 +274,46 @@ export function ModelEditor({
               <IconButton
                 label={t("sp.remove_model")}
                 size="sm"
-                onClick={() => setConfirmDelete(true)}
+                onClick={() => {
+                  setRenaming(false);
+                  setCloning(false);
+                  setConfirmDelete(true);
+                }}
               >
                 <Trash2Icon />
               </IconButton>
             ))}
         </div>
       </div>
+
+      {renaming && onRename && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl bg-card p-3 ring-1 ring-inset ring-border-subtle">
+          <span className="text-xs text-muted-foreground">{t("sp.defaults_rename_as")}</span>
+          <Input
+            value={renameDraft}
+            onChange={(event) => setRenameDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return;
+              if (event.key === "Enter") void handleRename();
+              if (event.key === "Escape") setRenaming(false);
+            }}
+            aria-label={t("sp.defaults_rename")}
+            spellCheck={false}
+            className="h-7 min-w-44 flex-1 rounded-lg font-mono text-xs shadow-none"
+            autoFocus
+          />
+          <Button size="xs" variant="ghost" onClick={() => setRenaming(false)}>
+            {t("common.cancel")}
+          </Button>
+          <Button
+            size="xs"
+            disabled={renameBusy || !renameTrimmed || renameDuplicate}
+            onClick={() => void handleRename()}
+          >
+            {renameDuplicate ? t("sp.exists") : t("common.save")}
+          </Button>
+        </div>
+      )}
 
       {cloning && (
         <div className="flex flex-wrap items-center gap-2 rounded-xl bg-card p-3 ring-1 ring-inset ring-border-subtle">
@@ -323,27 +398,69 @@ export function ModelEditor({
 
 export function ModelDefaultsView({ doc, onBack }: { doc: SettingsDocument; onBack?: () => void }) {
   const t = useT();
+  const scope = useSettings((state) => state.scope);
   const [editing, setEditing] = useState<string | null>(null);
   const [pattern, setPattern] = useState("");
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const pendingRenameRef = useRef<{ from: string; to: string } | null>(null);
 
   const patterns = useMemo(() => {
     const map = getPath(doc.effective, ["defaults", "models"]);
     return isObject(map) ? Object.keys(map).toSorted() : [];
   }, [doc.effective]);
 
-  if (editing && patterns.includes(editing)) {
-    const inherited = getPath(doc.document, ["defaults", "models", editing]) === undefined;
+  const canRenamePattern = (pat: string) =>
+    getPath(doc.document, ["defaults", "models", pat]) !== undefined &&
+    !(scope === "project" && getPath(doc.inherited, ["defaults", "models", pat]) !== undefined);
+
+  const renameRule = async (oldPat: string, nextPat: string): Promise<boolean> => {
+    const trimmed = nextPat.trim();
+    if (!trimmed) return false;
+    if (trimmed === oldPat) return true;
+    if (patterns.includes(trimmed)) return false;
+    pendingRenameRef.current = { from: oldPat, to: trimmed };
+    const ok = await writeSettings(
+      (current) => {
+        const prev = getPath(current, ["defaults", "models", oldPat]);
+        if (prev === undefined) return current;
+        const withoutOld = setPath(current, ["defaults", "models", oldPat], undefined);
+        return setPath(withoutOld, ["defaults", "models", trimmed], structuredClone(prev));
+      },
+      t("sp.defaults_renamed", { from: oldPat, to: trimmed }),
+    );
+    pendingRenameRef.current = null;
+    if (ok) {
+      setEditing((current) => (current === oldPat ? trimmed : current));
+    }
+    return ok;
+  };
+
+  const resolvedEditing =
+    editing && patterns.includes(editing)
+      ? editing
+      : editing &&
+          pendingRenameRef.current?.from === editing &&
+          patterns.includes(pendingRenameRef.current.to)
+        ? pendingRenameRef.current.to
+        : null;
+
+  if (resolvedEditing) {
+    const inherited = getPath(doc.document, ["defaults", "models", resolvedEditing]) === undefined;
+    const canRename = canRenamePattern(resolvedEditing);
     return (
       <ModelEditor
         doc={doc}
-        basePath={["defaults", "models", editing]}
-        title={editing}
+        basePath={["defaults", "models", resolvedEditing]}
+        title={resolvedEditing}
         subtitle={t("sp.defaults_rule_sub")}
         inherited={inherited}
         siblingIds={patterns}
         onBack={() => setEditing(null)}
         onCloned={(newId) => setEditing(newId)}
+        onRename={canRename ? (next) => renameRule(resolvedEditing, next) : undefined}
         onDeleted={() => setEditing(null)}
       />
     );
@@ -364,6 +481,22 @@ export function ModelDefaultsView({ doc, onBack }: { doc: SettingsDocument; onBa
     if (ok) {
       setPattern("");
       setEditing(trimmed);
+    }
+  };
+
+  const commitRowRename = async (pat: string) => {
+    const trimmed = renameDraft.trim();
+    if (renameBusy || !trimmed || (trimmed !== pat && patterns.includes(trimmed))) return;
+    if (trimmed === pat) {
+      setRenaming(null);
+      return;
+    }
+    setRenameBusy(true);
+    const ok = await renameRule(pat, trimmed);
+    setRenameBusy(false);
+    if (ok) {
+      setRenaming(null);
+      setRenameDraft("");
     }
   };
 
@@ -405,6 +538,38 @@ export function ModelDefaultsView({ doc, onBack }: { doc: SettingsDocument; onBa
           const val = getPath(doc.effective, ["defaults", "models", pat]);
           const info = isObject(val) ? val : {};
           const explicit = getPath(doc.document, ["defaults", "models", pat]) !== undefined;
+          const canRename = canRenamePattern(pat);
+          if (renaming === pat && canRename) {
+            const trimmed = renameDraft.trim();
+            const duplicate = trimmed !== pat && patterns.includes(trimmed);
+            return (
+              <div key={pat} className="flex items-center gap-2 px-3 py-2">
+                <Input
+                  value={renameDraft}
+                  onChange={(event) => setRenameDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.nativeEvent.isComposing) return;
+                    if (event.key === "Enter") void commitRowRename(pat);
+                    if (event.key === "Escape") setRenaming(null);
+                  }}
+                  aria-label={t("sp.defaults_rename")}
+                  spellCheck={false}
+                  className="h-7 min-w-0 flex-1 rounded-lg font-mono text-xs shadow-none"
+                  autoFocus
+                />
+                <Button size="xs" variant="ghost" onClick={() => setRenaming(null)}>
+                  {t("common.cancel")}
+                </Button>
+                <Button
+                  size="xs"
+                  disabled={renameBusy || !trimmed || duplicate}
+                  onClick={() => void commitRowRename(pat)}
+                >
+                  {duplicate ? t("sp.exists") : t("common.save")}
+                </Button>
+              </div>
+            );
+          }
           const ctx = typeof info.context_window === "number" ? info.context_window : undefined;
           const out =
             typeof info.max_output_tokens === "number" ? info.max_output_tokens : undefined;
@@ -435,25 +600,46 @@ export function ModelDefaultsView({ doc, onBack }: { doc: SettingsDocument; onBa
                   )}
                 </span>
               </button>
-              {explicit &&
-                (confirmDelete === pat ? (
+              {explicit && confirmDelete === pat ? (
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button size="xs" variant="ghost" onClick={() => setConfirmDelete(null)}>
+                    {t("common.cancel")}
+                  </Button>
+                  <Button size="xs" variant="destructive" onClick={() => void removeRule(pat)}>
+                    {t("sp.confirm_delete")}
+                  </Button>
+                </div>
+              ) : (
+                (canRename || explicit) && (
                   <div className="flex shrink-0 items-center gap-1">
-                    <Button size="xs" variant="ghost" onClick={() => setConfirmDelete(null)}>
-                      {t("common.cancel")}
-                    </Button>
-                    <Button size="xs" variant="destructive" onClick={() => void removeRule(pat)}>
-                      {t("sp.confirm_delete")}
-                    </Button>
+                    {canRename && (
+                      <IconButton
+                        label={t("sp.defaults_rename")}
+                        size="xs"
+                        onClick={() => {
+                          setConfirmDelete(null);
+                          setRenaming(pat);
+                          setRenameDraft(pat);
+                        }}
+                      >
+                        <PencilIcon />
+                      </IconButton>
+                    )}
+                    {explicit && (
+                      <IconButton
+                        label={t("sp.remove_model")}
+                        size="xs"
+                        onClick={() => {
+                          setRenaming(null);
+                          setConfirmDelete(pat);
+                        }}
+                      >
+                        <Trash2Icon />
+                      </IconButton>
+                    )}
                   </div>
-                ) : (
-                  <IconButton
-                    label={t("sp.remove_model")}
-                    size="xs"
-                    onClick={() => setConfirmDelete(pat)}
-                  >
-                    <Trash2Icon />
-                  </IconButton>
-                ))}
+                )
+              )}
             </div>
           );
         })}
