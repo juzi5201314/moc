@@ -1,9 +1,7 @@
 // 供应商与模型工作台：顶部全宽供应商切换条 + 全宽详情（Models / Connection / Params）
-// + 模型钻取编辑 + 通配默认规则 + 预设新建 + 连通性测试 + 模型发现与批量操作。
+// + 模型钻取编辑 + 通配默认规则 + 预设新建 + 模型发现与批量操作。
 
 import {
-  ActivityIcon,
-  CheckCircle2Icon,
   CheckIcon,
   CopyIcon,
   DownloadCloudIcon,
@@ -15,7 +13,6 @@ import {
   SlidersHorizontalIcon,
   SparklesIcon,
   Trash2Icon,
-  XCircleIcon,
   XIcon,
   ZapIcon,
 } from "lucide-react";
@@ -51,7 +48,6 @@ import type {
   ChoiceOption,
   ConfigAction,
   ConfigReply,
-  ProviderTestResult,
   SettingsDocument,
 } from "@/protocol/types";
 import { FieldList, FieldRow } from "./field";
@@ -93,13 +89,6 @@ async function discover(id: string, provider: unknown): Promise<CatalogModel[]> 
   const action: ConfigAction = { action: "models", id, provider };
   const reply = await rpc.call<ConfigReply>("config/manage", action);
   if (reply.kind !== "models") throw new Error(t("sp.bad_reply"));
-  return reply.data;
-}
-
-async function testConnection(id: string, provider: unknown): Promise<ProviderTestResult> {
-  const action: ConfigAction = { action: "test_provider", id, provider };
-  const reply = await rpc.call<ConfigReply>("config/manage", action);
-  if (reply.kind !== "provider_test") throw new Error(t("sp.bad_reply"));
   return reply.data;
 }
 
@@ -266,7 +255,7 @@ export function ProvidersSection({ doc }: { doc: SettingsDocument }) {
   );
 }
 
-// ---------- 新建供应商（带服务商预设、前端校验、保存前测通、仅添加 / 添加并拉取） ----------
+// ---------- 新建供应商（带服务商预设、前端校验、仅添加 / 添加并拉取） ----------
 
 function AddProvider({
   options,
@@ -287,12 +276,9 @@ function AddProvider({
   const [apiKey, setApiKey] = useState("");
   const [azureVersion, setAzureVersion] = useState("");
   const [busy, setBusy] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<ProviderTestResult | null>(null);
 
   const applyPreset = (preset: ProviderPreset) => {
     setPresetKey(preset.key);
-    setTestResult(null);
     if (preset.key === "custom") {
       setAzureVersion("");
       return;
@@ -328,25 +314,6 @@ function AddProvider({
       payload.endpoint = { Azure: { api_version: azureVersion.trim() } };
     }
     return payload;
-  };
-
-  const runTest = async () => {
-    if (!trimmedUrl || urlInvalid) return;
-    setTesting(true);
-    setTestResult(null);
-    try {
-      const res = await testConnection(trimmed || "preview", buildPayload());
-      setTestResult(res);
-    } catch (error) {
-      setTestResult({
-        ok: false,
-        latency_ms: 0,
-        endpoint: trimmedUrl,
-        message: errorText(error),
-      });
-    } finally {
-      setTesting(false);
-    }
   };
 
   const create = async (shouldFetch: boolean) => {
@@ -455,39 +422,24 @@ function AddProvider({
         </Labeled>
       </div>
 
-      {testResult && <TestResultBanner result={testResult} onClose={() => setTestResult(null)} />}
-
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {onCancel && (
+          <Button variant="ghost" size="sm" onClick={onCancel}>
+            {t("common.cancel")}
+          </Button>
+        )}
         <Button
-          type="button"
           variant="outline"
           size="sm"
-          disabled={!trimmedUrl || Boolean(urlInvalid) || testing}
-          onClick={() => void runTest()}
+          disabled={!ready || busy}
+          onClick={() => void create(false)}
         >
-          {testing ? <Loader2Icon className="animate-spin" /> : <ActivityIcon />}
-          {t("sp.test_conn")}
+          {t("sp.add_only")}
         </Button>
-
-        <div className="flex items-center gap-2">
-          {onCancel && (
-            <Button variant="ghost" size="sm" onClick={onCancel}>
-              {t("common.cancel")}
-            </Button>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!ready || busy}
-            onClick={() => void create(false)}
-          >
-            {t("sp.add_only")}
-          </Button>
-          <Button size="sm" disabled={!ready || busy} onClick={() => void create(true)}>
-            {busy && <Loader2Icon className="animate-spin" />}
-            {t("sp.add_fetch")}
-          </Button>
-        </div>
+        <Button size="sm" disabled={!ready || busy} onClick={() => void create(true)}>
+          {busy && <Loader2Icon className="animate-spin" />}
+          {t("sp.add_fetch")}
+        </Button>
       </div>
     </div>
   );
@@ -513,43 +465,6 @@ function Labeled({
           <p className={cn("text-xs", error ? "text-destructive" : "text-text-tertiary")}>{hint}</p>
         )}
       </div>
-    </div>
-  );
-}
-
-function TestResultBanner({
-  result,
-  onClose,
-}: {
-  result: ProviderTestResult;
-  onClose: () => void;
-}) {
-  return (
-    <div
-      className={cn(
-        "flex items-start gap-2 rounded-xl px-3.5 py-2.5 text-xs",
-        result.ok ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive",
-      )}
-    >
-      {result.ok ? (
-        <CheckCircle2Icon className="mt-0.5 size-3.5 shrink-0" />
-      ) : (
-        <XCircleIcon className="mt-0.5 size-3.5 shrink-0" />
-      )}
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <p className="break-words">{result.message}</p>
-        {result.endpoint && (
-          <p className="truncate font-mono text-2xs opacity-75">{result.endpoint}</p>
-        )}
-      </div>
-      <button
-        type="button"
-        onClick={onClose}
-        className="shrink-0 rounded p-0.5 opacity-70 hover:opacity-100"
-        aria-label="Close"
-      >
-        <XIcon className="size-3.5" />
-      </button>
     </div>
   );
 }
@@ -585,8 +500,6 @@ function ProviderDetail({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [cloning, setCloning] = useState(false);
   const [cloneName, setCloneName] = useState("");
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<ProviderTestResult | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
@@ -665,28 +578,6 @@ function ProviderDetail({
       setDiscovered({ busy: false, models: list, error: null });
     } catch (error) {
       setDiscovered({ busy: false, models: null, error: errorText(error) });
-    }
-  };
-
-  const runTest = async () => {
-    setTesting(true);
-    setTestResult(null);
-    const latest = useSettings.getState().docs[useSettings.getState().scope];
-    try {
-      const res = await testConnection(
-        id,
-        getPath(latest?.effective, ["providers", id]) ?? provider,
-      );
-      setTestResult(res);
-    } catch (error) {
-      setTestResult({
-        ok: false,
-        latency_ms: 0,
-        endpoint: baseUrlStr,
-        message: errorText(error),
-      });
-    } finally {
-      setTesting(false);
     }
   };
 
@@ -832,16 +723,6 @@ function ProviderDetail({
               aria-label={t("sp.enabled")}
             />
           </div>
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            disabled={testing}
-            onClick={() => void runTest()}
-          >
-            {testing ? <Loader2Icon className="animate-spin" /> : <ActivityIcon />}
-            {t("sp.test_conn")}
-          </Button>
           <IconButton
             label={t("sp.clone_provider")}
             size="sm"
@@ -900,8 +781,6 @@ function ProviderDetail({
           </Button>
         </div>
       )}
-
-      {testResult && <TestResultBanner result={testResult} onClose={() => setTestResult(null)} />}
 
       <div className="flex flex-wrap items-center gap-1 border-b border-border-subtle pb-2">
         {(

@@ -1205,7 +1205,6 @@ export const en: Record<MsgKey, string> = {
   "sp.tab_general": "General",
   "sp.tab_models": "Models",
   "sp.tab_params": "Params & Headers",
-  "sp.test_conn": "Test",
   "sp.thinking_default_hint": "Using default set (first item is default)",
   "sp.thinking_level_invalid": "Lowercase letters, digits, - _ . only (max 32 chars, not off).",
   "sp.undo": "Undo",

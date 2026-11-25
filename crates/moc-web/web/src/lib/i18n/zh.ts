@@ -1180,7 +1180,6 @@ export const zh = {
   "sp.tab_general": "General",
   "sp.tab_models": "Models",
   "sp.tab_params": "Params & Headers",
-  "sp.test_conn": "Test",
   "sp.thinking_default_hint": "使用默认等级集合（首项为默认等级）",
   "sp.thinking_level_invalid": "仅允许小写字母、数字、- _ .（最长 32 字符，不能为 off）。",
   "sp.undo": "Undo",
