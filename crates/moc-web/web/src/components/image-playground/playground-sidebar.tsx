@@ -1,6 +1,7 @@
 // Image Playground 左侧导航栏：三大平行视图（生成 / 画廊 / 收藏）+ 会话列表 + 底部设置入口。
 
 import {
+  ChevronsUpIcon,
   ImagesIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -15,6 +16,7 @@ import {
 import { type ReactNode, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { IconButton } from "@/components/common/icon-button";
+import { SEARCH_VISIBLE_SESSIONS, SessionPagingRow } from "@/components/sidebar/session-paging";
 import { ConnectionBadge } from "@/components/sidebar/workspace-sidebar";
 import {
   DropdownMenu,
@@ -31,6 +33,8 @@ import { type PlaygroundView, useImagePlayground } from "@/store/image-playgroun
 import { openSettings } from "@/store/ui";
 
 const ROW = "flex h-8 w-full items-center gap-2 rounded-md px-2 text-ui transition-colors";
+/** Image Playground 侧栏默认展示的会话数；超出后按段展开。 */
+const VISIBLE_SESSIONS = 10;
 
 function NavRow({
   icon,
@@ -79,12 +83,26 @@ export function PlaygroundSidebar() {
 
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
+  const [extraShown, setExtraShown] = useState(0);
+  const sessionsHeader = useRef<HTMLDivElement>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return sessions;
     return sessions.filter((s) => s.title.toLowerCase().includes(q));
   }, [sessions, query]);
+
+  const base = query.trim() ? SEARCH_VISIBLE_SESSIONS : VISIBLE_SESSIONS;
+  const visible = filtered.slice(0, base + extraShown);
+  const hidden = filtered.length - visible.length;
+  const canCollapse = extraShown > 0 && visible.length > base;
+
+  const collapseSessions = () => {
+    setExtraShown(0);
+    requestAnimationFrame(() => {
+      sessionsHeader.current?.scrollIntoView?.({ block: "nearest" });
+    });
+  };
 
   const switchView = (next: PlaygroundView) => {
     setView(next);
@@ -103,6 +121,7 @@ export function PlaygroundSidebar() {
             onClick={() => {
               setSearching((v) => !v);
               setQuery("");
+              setExtraShown(0);
             }}
           >
             <SearchIcon />
@@ -118,11 +137,15 @@ export function PlaygroundSidebar() {
               // biome-ignore lint/a11y/noAutofocus: 搜索行由用户点击展开
               autoFocus
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setExtraShown(0);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
                   setSearching(false);
                   setQuery("");
+                  setExtraShown(0);
                 }
               }}
               placeholder={t("ip.search_sessions")}
@@ -134,6 +157,7 @@ export function PlaygroundSidebar() {
               onClick={() => {
                 setSearching(false);
                 setQuery("");
+                setExtraShown(0);
               }}
             >
               <XIcon />
@@ -167,11 +191,21 @@ export function PlaygroundSidebar() {
           />
         </div>
 
-        <div className="mt-3 flex h-8 items-center justify-between pl-2">
+        <div
+          ref={sessionsHeader}
+          className="sticky top-0 z-10 mt-3 flex h-8 items-center justify-between bg-sidebar pl-2"
+        >
           <span className="text-xs text-text-tertiary">{t("ip.sessions")}</span>
-          <IconButton label={t("ip.new_session")} onClick={newSession}>
-            <SquarePenIcon />
-          </IconButton>
+          <div className="flex items-center gap-0.5">
+            {canCollapse && (
+              <IconButton label={t("th.collapse")} size="xs" onClick={collapseSessions}>
+                <ChevronsUpIcon />
+              </IconButton>
+            )}
+            <IconButton label={t("ip.new_session")} onClick={newSession}>
+              <SquarePenIcon />
+            </IconButton>
+          </div>
         </div>
 
         {filtered.length === 0 ? (
@@ -180,13 +214,20 @@ export function PlaygroundSidebar() {
           </div>
         ) : (
           <div className="space-y-px">
-            {filtered.map((session) => (
+            {visible.map((session) => (
               <PlaygroundSessionRow
                 key={session.id}
                 session={session}
                 active={view === "generate" && session.id === activeSessionId}
               />
             ))}
+            <SessionPagingRow
+              hidden={hidden}
+              canCollapse={canCollapse}
+              onMore={(step) => setExtraShown((count) => count + step)}
+              onCollapse={collapseSessions}
+              className="pr-2 pl-[30px]"
+            />
           </div>
         )}
       </div>

@@ -3,6 +3,7 @@
 import {
   ArrowUpRightIcon,
   ChevronRightIcon,
+  ChevronsUpIcon,
   CopyIcon,
   FolderPlusIcon,
   MoreHorizontalIcon,
@@ -47,11 +48,10 @@ import { useTabs } from "@/store/tabs";
 import { attentionCount, useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
 import { selectWorkflowBadges, useWorkflow, workflowRuns } from "@/store/workflow";
+import { SEARCH_VISIBLE_SESSIONS, SessionPagingRow } from "./session-paging";
 
-/** 每个工作区默认展示的会话数；更多的折叠在「显示更多」后面。 */
+/** 每个工作区默认展示的会话数；更多的按段折叠在「More」后面。 */
 const VISIBLE_SESSIONS = 6;
-/** 搜索时每个工作区直接展开的匹配数上限；其余仍走「显示更多」。 */
-const SEARCH_VISIBLE_SESSIONS = 20;
 /** 侧栏内容匹配展示的会话数上限。 */
 const SEARCH_CONTENT_ITEMS = 8;
 
@@ -206,7 +206,8 @@ export function WorkspaceSidebar() {
   const [searching, setSearching] = useState(false);
   const searchTrigger = useRef<HTMLButtonElement>(null);
   const [folded, setFolded] = useState<Record<string, boolean>>({});
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [extraShown, setExtraShown] = useState<Record<string, number>>({});
+  const groupHeaders = useRef<Record<string, HTMLDivElement | null>>({});
 
   const groups = useMemo(
     () => groupWorkspaces(allSessions({ list, extra }), workspaces, query),
@@ -235,7 +236,20 @@ export function WorkspaceSidebar() {
   const closeSearch = () => {
     setSearching(false);
     setQuery("");
+    setExtraShown({});
     searchTrigger.current?.focus();
+  };
+
+  const collapseGroup = (cwd: string) => {
+    setExtraShown((state) => {
+      if (!state[cwd]) return state;
+      const next = { ...state };
+      delete next[cwd];
+      return next;
+    });
+    requestAnimationFrame(() => {
+      groupHeaders.current[cwd]?.scrollIntoView?.({ block: "nearest" });
+    });
   };
 
   return (
@@ -263,7 +277,10 @@ export function WorkspaceSidebar() {
               // biome-ignore lint/a11y/noAutofocus: 搜索行由用户点击展开，立即可输入
               autoFocus
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setExtraShown({});
+              }}
               onKeyDown={(event) => event.key === "Escape" && closeSearch()}
               aria-label={t("sb.filter_ph")}
               placeholder={t("sb.filter_ph")}
@@ -324,49 +341,63 @@ export function WorkspaceSidebar() {
             )}
             {groups.map((group) => {
               const isFolded = Boolean(folded[group.cwd]);
-              const expandedGroup = Boolean(expanded[group.cwd]);
-              // 搜索时先截到每组 SEARCH_VISIBLE_SESSIONS 条，避免一次查询挂满整棵树。
-              const cap = expandedGroup
-                ? Number.POSITIVE_INFINITY
-                : query
-                  ? SEARCH_VISIBLE_SESSIONS
-                  : VISIBLE_SESSIONS;
-              const visible = group.sessions.slice(0, cap);
+              const base = query.trim() ? SEARCH_VISIBLE_SESSIONS : VISIBLE_SESSIONS;
+              const extraCount = extraShown[group.cwd] ?? 0;
+              const visible = group.sessions.slice(0, base + extraCount);
               const hidden = group.sessions.length - visible.length;
+              const canCollapse = !isFolded && extraCount > 0 && visible.length > base;
               return (
                 <div key={group.cwd} className="mb-2">
                   <div
-                    className={cn(ROW, "group/ws cursor-pointer pr-1 hover:bg-sidebar-accent")}
-                    title={group.cwd}
+                    ref={(node) => {
+                      groupHeaders.current[group.cwd] = node;
+                    }}
+                    className="sticky top-0 z-10 bg-sidebar"
                   >
-                    <button
-                      type="button"
-                      className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-                      onClick={() => setFolded((state) => ({ ...state, [group.cwd]: !isFolded }))}
+                    <div
+                      className={cn(ROW, "group/ws cursor-pointer pr-1 hover:bg-sidebar-accent")}
+                      title={group.cwd}
                     >
-                      <ChevronRightIcon
-                        className={cn(
-                          "size-3.5 shrink-0 text-text-tertiary transition-transform duration-150",
-                          !isFolded && "rotate-90",
-                        )}
-                      />
-                      <span className="truncate font-medium text-sidebar-foreground/90">
-                        {group.name}
-                      </span>
-                    </button>
-                    <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/ws:opacity-100 group-focus-within/ws:opacity-100 has-[[data-state=open]]:opacity-100 pointer-coarse:opacity-100">
-                      <IconButton
-                        label={t("sb.new_here")}
-                        size="xs"
-                        onClick={() => createQuickSession(group.cwd)}
+                      <button
+                        type="button"
+                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                        onClick={() => setFolded((state) => ({ ...state, [group.cwd]: !isFolded }))}
                       >
-                        <PlusIcon />
-                      </IconButton>
-                      <WorkspaceMenu
-                        cwd={group.cwd}
-                        removable={workspaces.includes(group.cwd)}
-                        sessionCount={group.sessions.length}
-                      />
+                        <ChevronRightIcon
+                          className={cn(
+                            "size-3.5 shrink-0 text-text-tertiary transition-transform duration-150",
+                            !isFolded && "rotate-90",
+                          )}
+                        />
+                        <span className="truncate font-medium text-sidebar-foreground/90">
+                          {group.name}
+                        </span>
+                      </button>
+                      <div className="flex shrink-0 items-center">
+                        <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/ws:opacity-100 group-focus-within/ws:opacity-100 has-[[data-state=open]]:opacity-100 pointer-coarse:opacity-100">
+                          <IconButton
+                            label={t("sb.new_here")}
+                            size="xs"
+                            onClick={() => createQuickSession(group.cwd)}
+                          >
+                            <PlusIcon />
+                          </IconButton>
+                          <WorkspaceMenu
+                            cwd={group.cwd}
+                            removable={workspaces.includes(group.cwd)}
+                            sessionCount={group.sessions.length}
+                          />
+                        </div>
+                        {canCollapse && (
+                          <IconButton
+                            label={t("th.collapse")}
+                            size="xs"
+                            onClick={() => collapseGroup(group.cwd)}
+                          >
+                            <ChevronsUpIcon />
+                          </IconButton>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -379,34 +410,18 @@ export function WorkspaceSidebar() {
                           active={session.id === active}
                         />
                       ))}
-                      {hidden > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => setExpanded((state) => ({ ...state, [group.cwd]: true }))}
-                          className={cn(
-                            ROW,
-                            "pl-[30px] text-ui text-text-tertiary hover:text-foreground",
-                          )}
-                        >
-                          {t("sb.more_n", { n: hidden })}
-                        </button>
-                      )}
-                      {expanded[group.cwd] &&
-                        !query &&
-                        group.sessions.length > VISIBLE_SESSIONS && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setExpanded((state) => ({ ...state, [group.cwd]: false }))
-                            }
-                            className={cn(
-                              ROW,
-                              "pl-[30px] text-ui text-text-tertiary hover:text-foreground",
-                            )}
-                          >
-                            {t("th.collapse")}
-                          </button>
-                        )}
+                      <SessionPagingRow
+                        hidden={hidden}
+                        canCollapse={canCollapse}
+                        onMore={(step) =>
+                          setExtraShown((state) => ({
+                            ...state,
+                            [group.cwd]: (state[group.cwd] ?? 0) + step,
+                          }))
+                        }
+                        onCollapse={() => collapseGroup(group.cwd)}
+                        className="pr-2.5 pl-[30px]"
+                      />
                       {group.sessions.length === 0 && (
                         <div className="py-1.5 pl-[30px] text-ui text-text-tertiary">
                           {t("sb.no_sessions")}

@@ -873,6 +873,7 @@ export const en: Record<MsgKey, string> = {
   "sb.handshake_failed": "Handshake failed: {error}",
   "sb.more": "More",
   "sb.more_n": "More ({n})",
+  "sb.more_step": "More +{step} ({total})",
   "sb.new_here": "New session in this directory",
   "sb.no_match": "No matching sessions.",
   "sb.no_sessions": "No sessions yet.",

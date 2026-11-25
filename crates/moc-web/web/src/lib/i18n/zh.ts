@@ -858,6 +858,7 @@ export const zh = {
   "sb.handshake_failed": "握手失败：{error}",
   "sb.more": "More",
   "sb.more_n": "More ({n})",
+  "sb.more_step": "More +{step} ({total})",
   "sb.new_here": "在此目录新建 session",
   "sb.no_match": "没有匹配的 session。",
   "sb.no_sessions": "暂无 session。",
