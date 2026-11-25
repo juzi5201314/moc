@@ -381,7 +381,7 @@ function ContentView({
   if (markdownPreview) {
     return (
       <div className="p-4">
-        <MessageResponse>{text}</MessageResponse>
+        <MessageResponse sessionId={sessionId}>{text}</MessageResponse>
       </div>
     );
   }

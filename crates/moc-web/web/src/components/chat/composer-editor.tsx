@@ -24,8 +24,8 @@ import {
 } from "@codemirror/view";
 import { type Ref, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { RefChip, type RefChipData } from "@/components/common/ref-chip";
 import { cn } from "@/lib/utils";
-import { RefChip, type RefChipData } from "./ref-chip";
 
 export type EditorChip = { from: number; to: number; chip: RefChipData };
 
@@ -88,6 +88,7 @@ class ChipWidget extends WidgetType {
       other.entry.to === this.entry.to &&
       other.entry.chip.kind === this.entry.chip.kind &&
       other.entry.chip.label === this.entry.chip.label &&
+      other.entry.chip.iconPath === this.entry.chip.iconPath &&
       other.entry.chip.detail === this.entry.chip.detail &&
       other.entry.chip.thumb === this.entry.chip.thumb &&
       other.entry.chip.interactive === this.entry.chip.interactive &&

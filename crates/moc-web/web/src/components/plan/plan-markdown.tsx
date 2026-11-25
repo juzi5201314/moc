@@ -10,6 +10,12 @@ import { createContext, type ReactNode, useContext, useMemo } from "react";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import {
+  createMarkdownAnchor,
+  MarkdownSessionContext,
+  markdownRefRewrite,
+  ValidatedInlineUriCode,
+} from "@/components/common/markdown-refs";
 import { MarkdownBreak } from "@/components/common/plain-lines";
 import { useT } from "@/lib/i18n";
 import { type PlanLineRange, rangeFromSelection } from "@/lib/plan-annotation";
@@ -18,6 +24,7 @@ import type { PlanAnnotation } from "@/protocol/types";
 
 type Props = {
   markdown: string;
+  sessionId?: string;
   annotations?: PlanAnnotation[];
   /** 点击某个块左侧的「＋」时给出该块的源码行范围。 */
   onAnnotate?: (range: PlanLineRange) => void;
@@ -95,13 +102,21 @@ const mark =
   (Tag: ElementType, name: string) =>
   ({ node: _node, ...props }: BlockProps) => <Tag data-streamdown={name} {...props} />;
 
-// pre 内的 code 是代码块正文，不能套行内代码的灰底
+// pre 内的 code 是代码块正文，不能套行内代码的灰底，也不触发内部 URI 胶囊升级。
 const InPre = createContext(false);
 
 function Code({ node: _node, ...props }: BlockProps) {
   const inPre = useContext(InPre);
-  return <code data-streamdown={inPre ? undefined : "inline-code"} {...props} />;
+  if (inPre) return <code {...props} />;
+  return (
+    <ValidatedInlineUriCode fallback={<code data-streamdown="inline-code" {...props} />}>
+      {props.children}
+    </ValidatedInlineUriCode>
+  );
 }
+
+const PlanAnchor = createMarkdownAnchor();
+const planRemarkPlugins = [remarkGfm, markdownRefRewrite];
 
 // 代码块自带 overflow:hidden，批注外壳要套在外面，否则悬停「＋」会被裁掉；
 // 外壳已经吃掉块间距，内层清掉 .moc-prose 给代码块的外边距。
@@ -131,7 +146,7 @@ const components = {
   blockquote: block("blockquote", "blockquote"),
   pre: Pre,
   code: Code,
-  a: mark("a", "link"),
+  a: PlanAnchor,
   br: MarkdownBreak,
   strong: mark("strong", "strong"),
   hr: mark("hr", "horizontal-rule"),
@@ -144,6 +159,7 @@ const components = {
 
 export function PlanMarkdown({
   markdown,
+  sessionId,
   annotations = [],
   onAnnotate,
   onSelectText,
@@ -180,11 +196,13 @@ export function PlanMarkdown({
         if (range) onSelectText(range);
       }}
     >
-      <AnnotateContext.Provider value={context}>
-        <Markdown remarkPlugins={[remarkGfm]} components={components}>
-          {markdown}
-        </Markdown>
-      </AnnotateContext.Provider>
+      <MarkdownSessionContext.Provider value={sessionId ?? null}>
+        <AnnotateContext.Provider value={context}>
+          <Markdown remarkPlugins={planRemarkPlugins} components={components}>
+            {markdown}
+          </Markdown>
+        </AnnotateContext.Provider>
+      </MarkdownSessionContext.Provider>
     </div>
   );
 }

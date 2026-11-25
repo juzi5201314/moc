@@ -1,13 +1,19 @@
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { RefText } from "@/components/chat/ref-text";
+import { PlanMarkdown } from "@/components/plan/plan-markdown";
+import { clearRefInspectCache } from "@/lib/ref-inspect";
+import { rpc } from "@/protocol/client";
 import { useTabs } from "@/store/tabs";
 import { useTranscript } from "@/store/transcript";
 import { CodeBlock, highlightCode } from "./code-block";
 import { MessageResponse } from "./message";
 
 const openFile = vi.fn();
+const revealDir = vi.fn();
 vi.mock("@/store/files", () => ({
   openFile: (...args: unknown[]) => openFile(...args),
+  revealDir: (...args: unknown[]) => revealDir(...args),
 }));
 
 class ImmediateIntersectionObserver {
@@ -292,5 +298,143 @@ describe("MessageResponse GitHub 风格渲染", () => {
       expect(strut.nextElementSibling?.tagName).toBe("BR");
     }
     expect(container.textContent).toBe("第一行\n第二行\n第三行");
+  });
+
+  it("所有有效引用渲染为胶囊，行范围与目录正确跳转，无效内部 URI 保持纯文本", async () => {
+    openFile.mockClear();
+    revealDir.mockClear();
+    clearRefInspectCache();
+    useTabs.setState({ active: "s-ref" });
+    useTranscript.setState((state) => ({
+      bySession: {
+        ...state.bySession,
+        "s-ref": { info: { cwd: "/repo" } } as never,
+      },
+    }));
+
+    const callSpy = vi
+      .spyOn(rpc, "call")
+      .mockImplementation(async (method: string, params?: unknown) => {
+        if (method === "resource/inspect") {
+          const refs = (params as { refs: string[] }).refs;
+          return {
+            refs: refs.map((token) => {
+              if (token === "skill://review") {
+                return { kind: "skill", label: "review", detail: "代码审查技能" };
+              }
+              if (token === "local://plan_1.md") {
+                return { kind: "local", label: "plan_1.md", detail: "/tmp/plan_1.md" };
+              }
+              if (token === "@src/app.ts") {
+                return { kind: "file", label: "app.ts", detail: "/repo/src/app.ts" };
+              }
+              if (token === "@src/chat") {
+                return { kind: "dir", label: "chat", detail: "/repo/src/chat" };
+              }
+              return null;
+            }),
+          };
+        }
+        throw new Error(`unexpected rpc: ${method}`);
+      });
+
+    try {
+      const md = [
+        "见 [descriptor.rs](file:///repo/src/descriptor.rs#L532-L725)、[L532-L725](file:///repo/src/descriptor.rs#L532-L725) 与 [chat/](src/chat/)。",
+        "该moc工具使用内部使用如skill://skill-a来表示skill a，以及 `该moc工具使用内部使用如skill://skill-a来表示skill a` 与 `skill://skill-a`。",
+        "无效显式链接 [假技能](skill://skill-a) 不成胶囊；真实引用 skill://review 与 `local://plan_1.md:12` 转胶囊。",
+      ].join("\n\n");
+
+      const view = render(<MessageResponse sessionId="s-ref">{md}</MessageResponse>);
+
+      await waitFor(() => {
+        const chips = [...view.container.querySelectorAll(".moc-ref-chip")];
+        expect(chips.map((el) => el.textContent)).toEqual([
+          "descriptor.rsL532-725",
+          "L532-L725",
+          "chat/",
+          "review",
+          "plan_1.mdL12",
+        ]);
+      });
+
+      const chips = [...view.container.querySelectorAll<HTMLElement>(".moc-ref-chip")];
+      // Tooltip 路径干净，不泄漏 #moc-fs: / #moc-res: 哨兵前缀
+      expect(chips[0].getAttribute("title")).toBe("src/descriptor.rs:532-725");
+      expect(chips[0].getAttribute("title")).not.toContain("#moc-");
+
+      // 无效裸 URI / 行内代码 / 显式链接全部保留原文，不成胶囊
+      expect(view.container.textContent).toContain("如skill://skill-a来表示skill a");
+      const inlineCodes = [...view.container.querySelectorAll('[data-streamdown="inline-code"]')];
+      expect(inlineCodes.map((el) => el.textContent)).toEqual([
+        "该moc工具使用内部使用如skill://skill-a来表示skill a",
+        "skill://skill-a",
+      ]);
+      expect(view.container.textContent).toContain("无效显式链接 假技能 不成胶囊");
+
+      fireEvent.click(chips[0]);
+      expect(openFile).toHaveBeenLastCalledWith(
+        "s-ref",
+        { kind: "fs", path: "/repo/src/descriptor.rs" },
+        { line: 532 },
+      );
+      fireEvent.click(chips[2]);
+      expect(revealDir).toHaveBeenLastCalledWith("s-ref", "/repo/src/chat");
+      fireEvent.click(chips[3]);
+      expect(openFile).toHaveBeenLastCalledWith(
+        "s-ref",
+        { kind: "resource", uri: "skill://review" },
+        {},
+      );
+      fireEvent.click(chips[4]);
+      expect(openFile).toHaveBeenLastCalledWith(
+        "s-ref",
+        { kind: "resource", uri: "local://plan_1.md" },
+        { line: 12 },
+      );
+      view.unmount();
+
+      // 计划正文同步支持文件胶囊点击打开
+      const planView = render(
+        <PlanMarkdown sessionId="s-ref" markdown="修改 [a.ts](src/a.ts:9) 与 skill://review。" />,
+      );
+      await waitFor(() => {
+        expect(planView.container.querySelectorAll(".moc-ref-chip")).toHaveLength(2);
+      });
+      fireEvent.click(planView.container.querySelectorAll(".moc-ref-chip")[0]);
+      expect(openFile).toHaveBeenLastCalledWith(
+        "s-ref",
+        { kind: "fs", path: "/repo/src/a.ts" },
+        { line: 9 },
+      );
+      planView.unmount();
+
+      // 用户消息气泡里的 @文件 / @目录 胶囊同样可点击跳转
+      const userView = render(
+        <RefText
+          sessionId="s-ref"
+          text="看看 @src/app.ts 和 @src/chat"
+          images={[]}
+          attachments={[]}
+        />,
+      );
+      await waitFor(() => {
+        expect(userView.container.querySelectorAll('button[data-slot="ref-chip"]')).toHaveLength(2);
+      });
+      const [fileBtn, dirBtn] = [
+        ...userView.container.querySelectorAll('button[data-slot="ref-chip"]'),
+      ];
+      fireEvent.click(fileBtn);
+      expect(openFile).toHaveBeenLastCalledWith("s-ref", {
+        kind: "fs",
+        path: "/repo/src/app.ts",
+      });
+      fireEvent.click(dirBtn);
+      expect(revealDir).toHaveBeenLastCalledWith("s-ref", "/repo/src/chat");
+      userView.unmount();
+    } finally {
+      callSpy.mockRestore();
+      clearRefInspectCache();
+    }
   });
 });

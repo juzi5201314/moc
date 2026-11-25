@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { useRef } from "react";
 import { afterEach, expect, it, vi } from "vitest";
+import { RefChip } from "@/components/common/ref-chip";
 import { Popover, PopoverAnchor } from "@/components/ui/popover";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
@@ -13,7 +14,6 @@ import {
 import type { SlashCommand } from "@/lib/slash";
 import { CommandChipEditor } from "./command-chip-editor";
 import { CommandArgMenu, CommandMenu, CommandParamHint } from "./command-menu";
-import { RefChip } from "./ref-chip";
 
 afterEach(() => {
   cleanup();

@@ -3,18 +3,7 @@
 // 有效引用（命令、`@` 路径、资源 URI、`#N` 图片、`#name` 文件）在输入框里渲染成整体控件。
 
 import type { EditorView } from "@codemirror/view";
-import {
-  ArrowUpIcon,
-  BookOpenIcon,
-  FileTextIcon,
-  FolderIcon,
-  HistoryIcon,
-  ListPlusIcon,
-  Loader2Icon,
-  LockIcon,
-  PackageIcon,
-  SquareIcon,
-} from "lucide-react";
+import { ArrowUpIcon, ListPlusIcon, Loader2Icon, LockIcon, SquareIcon } from "lucide-react";
 import { nanoid } from "nanoid";
 import { type DragEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -40,6 +29,7 @@ import {
   type SubmenuAction,
   stepEnabledIndex,
 } from "@/lib/command-params";
+import { FileTypeIcon, RefKindIcon } from "@/lib/file-icon";
 import { t, useT } from "@/lib/i18n";
 import { leadSelector, parseSelector } from "@/lib/models";
 import { useRefInfo } from "@/lib/ref-inspect";
@@ -139,28 +129,17 @@ function resourceToken(
   return isAttachment ? { prefix, start, end } : null;
 }
 
-const RESOURCE_ICON: Record<string, typeof FileTextIcon> = {
-  artifact: PackageIcon,
-  history: HistoryIcon,
-  local: FileTextIcon,
-  skill: BookOpenIcon,
-  namespace: FolderIcon,
-  file: FileTextIcon,
-  dir: FolderIcon,
-};
-
 /**
  * 资源候选 → 补全条目。工作区路径拆成文件名与所在目录：文件名完整显示并高亮命中字符，
  * 目录从左侧省略；详情区给出完整路径，超长路径在那里折行可见。
  */
 function resourceSuggestion(candidate: ResourceCandidate): Suggestion {
-  const Icon = RESOURCE_ICON[candidate.kind] ?? FileTextIcon;
   const label = candidate.label || candidate.uri;
   const matches = candidate.matches ?? [];
   const base = {
     key: candidate.uri,
     detail: candidate.description || undefined,
-    icon: <Icon />,
+    icon: <RefKindIcon kind={candidate.kind} path={label} />,
   };
   if (candidate.kind !== "file" && candidate.kind !== "dir")
     return { ...base, title: label, titleMatches: matches };
@@ -386,13 +365,24 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           chip: {
             kind: "file-ref",
             label: file.name,
+            iconPath: file.path ?? file.name,
             detail: `${where} · ${formatBytes(file.size)}`,
           },
         },
       ];
     }
     const info = refInfo(span.token);
-    return info ? [{ ...at, chip: info }] : [];
+    return info
+      ? [
+          {
+            ...at,
+            chip: {
+              ...info,
+              iconPath: span.token.startsWith("@") ? (info.detail ?? info.label) : span.token,
+            },
+          },
+        ]
+      : [];
   });
   // 指纹不含缩略图 data URL（可能几 MB），图片身份由 id 表达。
   const chipsKey = `${chips
@@ -1294,7 +1284,9 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                       fallbackIcon={
                         file.uploading ? (
                           <Loader2Icon className="size-3 animate-spin text-muted-foreground" />
-                        ) : undefined
+                        ) : (
+                          <FileTypeIcon name={file.name} className="size-3" />
+                        )
                       }
                     />
                     <AttachmentInfo />

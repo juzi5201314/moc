@@ -4,7 +4,7 @@ import { cjk } from "@streamdown/cjk";
 import { createMathPlugin } from "@streamdown/math";
 import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
-import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
+import type { ComponentProps, ComponentType, HTMLAttributes, ReactElement } from "react";
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
   defaultComponents,
@@ -15,23 +15,20 @@ import {
   type StreamdownTranslations,
 } from "streamdown";
 
+import {
+  createMarkdownAnchor,
+  type MarkdownAnchorProps,
+  MarkdownSessionContext,
+  markdownRefRewrite,
+  ValidatedInlineUriCode,
+} from "@/components/common/markdown-refs";
 import { MarkdownBreak } from "@/components/common/plain-lines";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup, ButtonGroupText } from "@/components/ui/button-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import {
-  FS_SENTINEL,
-  isResourceUri,
-  RESOURCE_SENTINEL,
-  resolveAnchorTarget,
-  splitLineRef,
-} from "@/lib/file-target";
 import { type Locale, t, useI18n, useT } from "@/lib/i18n";
 import { codePlugin, mermaidPlugin } from "@/lib/streamdown-plugins";
 import { useIsDark } from "@/lib/use-dark";
-import { openFile } from "@/store/files";
-import { useTabs } from "@/store/tabs";
-import { useTranscript } from "@/store/transcript";
 import { cn } from "@/lib/utils";
 import { mermaidConfig } from "./mermaid-theme";
 import { SVG_ALLOWED_TAGS, liftSvgFences, readFigureTokens } from "./svg-figure";
@@ -344,119 +341,26 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
   sessionId?: string;
 };
 
-type MarkdownLinkNode = {
-  type: string;
-  children?: MarkdownLinkNode[];
-  identifier?: string;
-  url?: string;
-  title?: string | null;
-};
-
-function isRelativeFileLink(url: string) {
-  const value = url.trim();
-  return value !== "" && !/^(?:[#/?\\]|[a-z][\w+.-]*:)/i.test(value);
-}
-
-/// file:// 与 local:// 等资源 URI 都不在 rehype-sanitize 的协议白名单里，
-/// href 会被剥掉、链接退化成 button。在 remark 层先改写：file:// → 裸路径；
-/// 资源 URI → `#moc-res:<uri>` 哨兵（fragment 不是协议，能活到组件层再解开）。
-const fileLinkRewrite = () => (tree: MarkdownLinkNode) => {
-  const definitions = new Map<string, MarkdownLinkNode>();
-  const references: MarkdownLinkNode[] = [];
-  const walk = (node: MarkdownLinkNode) => {
-    if (node.type === "definition" && node.identifier && !definitions.has(node.identifier)) {
-      definitions.set(node.identifier, node);
-    } else if (node.type === "linkReference") {
-      references.push(node);
-    }
-    if (typeof node.url === "string") {
-      if (/^file:\/\//i.test(node.url)) {
-        try {
-          // 保持编码形态，由 resolveAnchorTarget 统一解码一次，避免字面量 `%` 被二次解码。
-          node.url = new URL(node.url).pathname;
-        } catch {
-          // 非法 file:// URL 保留原样，交给后续管线按既有规则处理。
-        }
-      } else if (isResourceUri(node.url)) {
-        node.url = `${RESOURCE_SENTINEL}${node.url}`;
-      } else if (
-        !node.url.startsWith("#") &&
-        !/^[a-zA-Z][\w+.-]*:/.test(node.url) &&
-        splitLineRef(node.url).line !== undefined
-      ) {
-        // `src/a.ts:9` 这类行号写法含冒号，会被 URL 安全判定拦成按钮；
-        // 同样走哨兵 fragment 通道，组件层再拆回路径与行号。
-        node.url = `${FS_SENTINEL}${node.url}`;
-      } else if (node.type === "link" && isRelativeFileLink(node.url)) {
-        // rehype-harden 会拦截裸相对路径，或将 ./ 路径改成绝对路径。
-        node.url = `${FS_SENTINEL}${node.url}`;
-      }
-    }
-    for (const child of node.children ?? []) {
-      walk(child);
-    }
-  };
-  walk(tree);
-
-  for (const node of references) {
-    const definition = node.identifier ? definitions.get(node.identifier) : undefined;
-    if (definition?.url && isRelativeFileLink(definition.url)) {
-      node.type = "link";
-      node.url = `${FS_SENTINEL}${definition.url}`;
-      node.title = definition.title;
-    }
-  }
-};
-
 // remarkPlugins prop 是整体替换默认列表，GFM/代码元信息必须显式保留。
-const messageRemarkPlugins = [...Object.values(defaultRemarkPlugins), fileLinkRewrite];
+const messageRemarkPlugins = [...Object.values(defaultRemarkPlugins), markdownRefRewrite];
 
-const BuiltinAnchor = defaultComponents.a;
+const BuiltinAnchor = defaultComponents.a as ComponentType<MarkdownAnchorProps>;
+const BuiltinCode = defaultComponents.code;
+const MarkdownAnchor = createMarkdownAnchor(BuiltinAnchor) as NonNullable<Components["a"]>;
 
-/// 本地路径/资源 URI 链接：点击在文件分页打开（`path:12` 与 `path#L12` 带行号）。
-const MarkdownAnchor: NonNullable<Components["a"]> = ({
-  href,
-  children,
-  className,
-  node,
-  ...props
-}) => {
-  const sessionId = useTabs((state) => state.active);
-  const cwd = useTranscript((state) =>
-    sessionId ? (state.bySession[sessionId]?.info.cwd ?? "") : "",
-  );
-  const parsed = resolveAnchorTarget(href, cwd);
-  if (parsed) {
-    return (
-      <a
-        {...props}
-        className={cn(
-          "wrap-anywhere cursor-pointer font-medium text-primary underline",
-          className,
-        )}
-        data-streamdown="link"
-        href={href}
-        rel={undefined}
-        target={undefined}
-        onClick={(event) => {
-          event.preventDefault();
-          const id = useTabs.getState().active;
-          if (id) openFile(id, parsed.target, { line: parsed.line });
-        }}
-        title={href}
-      >
-        {children}
-      </a>
-    );
+const MarkdownCode: NonNullable<Components["code"]> = (props) => {
+  if ("data-block" in props) {
+    return BuiltinCode ? <BuiltinCode {...props} /> : <code {...props} />;
   }
-  return (
-    <BuiltinAnchor className={className} href={href} node={node} {...props}>
-      {children}
-    </BuiltinAnchor>
-  );
+  const fallback = BuiltinCode ? <BuiltinCode {...props} /> : <code {...props} />;
+  return <ValidatedInlineUriCode fallback={fallback}>{props.children}</ValidatedInlineUriCode>;
 };
 
-const messageComponents: Components = { a: MarkdownAnchor, br: MarkdownBreak };
+const messageComponents: Components = {
+  a: MarkdownAnchor,
+  code: MarkdownCode,
+  br: MarkdownBreak,
+};
 
 export const MessageResponse = memo(
   ({
@@ -506,14 +410,11 @@ export const MessageResponse = memo(
       );
     };
 
-    if (!parts) {
-      return renderMarkdown(children, isAnimating, undefined, className);
-    }
-    if (parts.length === 1 && parts[0].kind === "markdown") {
-      return renderMarkdown(parts[0].text, isAnimating, undefined, className);
-    }
-
-    return (
+    const content = !parts ? (
+      renderMarkdown(children, isAnimating, undefined, className)
+    ) : parts.length === 1 && parts[0].kind === "markdown" ? (
+      renderMarkdown(parts[0].text, isAnimating, undefined, className)
+    ) : (
       <div className={cn("flex w-full min-w-0 flex-col gap-3", className)}>
         {parts.map((part, index) =>
           part.kind === "markdown" ? (
@@ -534,6 +435,12 @@ export const MessageResponse = memo(
           ),
         )}
       </div>
+    );
+
+    return (
+      <MarkdownSessionContext.Provider value={sessionId ?? null}>
+        {content}
+      </MarkdownSessionContext.Provider>
     );
   },
   (prevProps, nextProps) =>

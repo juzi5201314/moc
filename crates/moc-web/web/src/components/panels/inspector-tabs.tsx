@@ -455,6 +455,7 @@ export function BtwTab({ sessionId }: { sessionId: string }) {
             </div>
             {turn.answer ? (
               <MessageResponse
+                sessionId={sessionId}
                 className="[--moc-prose-size:13.5px]"
                 isAnimating={turn.status === "generating"}
               >

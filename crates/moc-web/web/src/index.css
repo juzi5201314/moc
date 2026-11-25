@@ -554,14 +554,24 @@
   accent-color: var(--brand);
 }
 
-.moc-prose [data-streamdown="link"] {
+.moc-prose [data-streamdown="link"]:not(.moc-ref-chip) {
   font-weight: 450;
   color: var(--brand);
   text-decoration: none;
 }
-.moc-prose [data-streamdown="link"]:hover {
+.moc-prose [data-streamdown="link"]:not(.moc-ref-chip):hover {
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+
+/* 正文引用胶囊：压过 Streamdown 默认链接色与下划线。 */
+.moc-prose .moc-ref-chip {
+  font-weight: 400;
+  color: var(--foreground);
+  text-decoration: none;
+}
+.moc-prose .moc-ref-chip:hover {
+  text-decoration: none;
 }
 
 .moc-prose [data-streamdown="strong"] {
@@ -577,6 +587,15 @@
   color: var(--foreground);
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
+}
+/* 胶囊内嵌行内代码剥离双重灰底与等宽内边距（如 [`types.ts`](src/types.ts)）。 */
+.moc-prose .moc-ref-chip [data-streamdown="inline-code"] {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
 }
 
 .moc-prose [data-streamdown="blockquote"] {
@@ -647,8 +666,9 @@
 .moc-prose [data-streamdown="table-cell"]:last-child {
   padding-right: 0;
 }
-/* 单元格里的行内代码多是路径与标识符，不在连字符处折断；整表放不下时由外层横向滚动 */
-.moc-prose [data-streamdown="table-cell"] [data-streamdown="inline-code"] {
+/* 单元格里的行内代码与引用胶囊多是路径与标识符，不在连字符处折断；整表放不下时由外层横向滚动 */
+.moc-prose [data-streamdown="table-cell"] [data-streamdown="inline-code"],
+.moc-prose [data-streamdown="table-cell"] .moc-ref-chip {
   white-space: nowrap;
 }
 

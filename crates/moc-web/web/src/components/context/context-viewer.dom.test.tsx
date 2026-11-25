@@ -3,8 +3,15 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ContextContentResult, ContextNode } from "@/protocol/types";
 import { useUi } from "@/store/ui";
 
-const { call, on } = vi.hoisted(() => ({ call: vi.fn(), on: vi.fn() }));
-vi.mock("@/protocol/client", () => ({ rpc: { call, on } }));
+const { call, on, onRequest } = vi.hoisted(() => ({
+  call: vi.fn(),
+  on: vi.fn(),
+  onRequest: vi.fn(() => () => {}),
+}));
+vi.mock("@/protocol/client", () => ({
+  rpc: { call, on, onRequest },
+  clientListeners: { ready: new Set(), status: new Set(), handshakeError: new Set() },
+}));
 vi.mock("@/store/connection", () => ({ useConnection: { subscribe: () => () => {} } }));
 
 import { ContextDialog } from "./context-dialog";

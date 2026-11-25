@@ -312,6 +312,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
           {/* 左侧留出 pl-8 给悬停「＋」（块内 -left-6），不能用 overflow-hidden 裁掉它 */}
           <div className="overflow-x-auto rounded-2xl border border-border bg-card py-4 pr-5 pl-8">
             <PlanMarkdown
+              sessionId={sessionId}
               markdown={plan.markdown}
               annotations={[...submitted, ...drafts]}
               onAnnotate={annotatable ? (range) => openEditor(range) : undefined}

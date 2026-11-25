@@ -1,7 +1,7 @@
 // 文件树：按需加载、键盘导航、右键菜单、inline 命名、拖拽移动与外部拖入上传。
 // 会话空间根固定 5 个命名空间，中文标签 + 行尾原文 URI。
 
-import { ChevronRightIcon, FileCode2Icon, FileIcon, FileTextIcon } from "lucide-react";
+import { ChevronRightIcon } from "lucide-react";
 import { type DragEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -21,6 +21,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { FileTypeIcon } from "@/lib/file-icon";
 import { type MsgKey, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { useComposer } from "@/store/composer";
@@ -63,22 +64,6 @@ const NS_LABEL: Record<string, MsgKey> = {
   "skill://": "ft.ns_skill",
 };
 
-const TEXT_EXTS: Record<string, typeof FileIcon> = {
-  rs: FileCode2Icon,
-  ts: FileCode2Icon,
-  tsx: FileCode2Icon,
-  js: FileCode2Icon,
-  jsx: FileCode2Icon,
-  py: FileCode2Icon,
-  go: FileCode2Icon,
-  md: FileTextIcon,
-};
-
-function fileIcon(name: string) {
-  const ext = name.split(".").pop()?.toLowerCase() ?? "";
-  return TEXT_EXTS[ext] ?? FileIcon;
-}
-
 /** 每级 12px 缩进 + 极淡引导线。 */
 function Row({
   node,
@@ -101,7 +86,6 @@ function Row({
   const naming = files?.naming;
   const isRenaming = naming?.kind === "rename" && naming.fromKey === node.key;
   const isDir = node.kind === "dir";
-  const Icon = isDir ? null : fileIcon(node.name);
   const isNsRoot = sessionRoot && depth === 0;
   const nsKey = isNsRoot ? NS_LABEL[node.key] : undefined;
   const label = nsKey ? t(nsKey) : node.name;
@@ -128,7 +112,7 @@ function Row({
       ) : (
         <span className="w-3.5 shrink-0" />
       )}
-      {Icon && <Icon className="size-3.5 shrink-0 text-text-tertiary" />}
+      {!isDir && <FileTypeIcon name={node.name} />}
       {isRenaming ? (
         <NamingInput initial={node.name} nodeKey={node.key} />
       ) : (

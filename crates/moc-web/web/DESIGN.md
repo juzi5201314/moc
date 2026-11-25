@@ -102,7 +102,7 @@
 - 点击卡片空白处聚焦输入；拖拽文件时外层出现 `ring-brand/40`。
 - 发送按钮：`size-8` 圆形、`bg-foreground` 反色，禁用时降为 tertiary。会话运行中且有草稿时拉长为 `ButtonGroup` 分体胶囊：左半 secondary 浅灰底 + 列表加号图标，排队（Ctrl+Enter）；右半保持主色箭头，按「运行中发送」偏好补充或中断（Enter）。开启「Queue on Enter」后两键互换（Enter 排队、Ctrl+Enter 补充或中断），按钮位置不变，tooltip、占位文案与快捷键列表随之改写。两半与空闲发送按钮都用 tooltip 标注动作与快捷键。Shift/Alt+Enter 换行。
 - Plan chip（`bg-brand/10 text-brand`）只在 plan 模式下出现，点击退出；入口是 `/plan` 与 Alt+J。`/plan` 补全选中或其后键入空白即切换（再输一次退出），命令不留在输入框，其后文字保留为草稿。
-- 输入框是 CodeMirror 6（`ComposerEditor`），文本模型仍是纯字符串；有效引用渲染成引用控件（`RefChip`）：`h-5 rounded-md bg-accent` 灰底小胶囊，muted 图标 + 短名，悬停 tooltip 给完整路径或说明，原子范围（光标跨过、退格整体删除）。认的引用：开头的已知 `/命令` 及其已落定的非自然语言参数（子命令、枚举、动态选项、路径、数值等统一收拢进同一胶囊，命令名正文色、参数 muted 色；自然语言正文留在胶囊外；带非自然语言参数的命令胶囊可点击展开参数编辑浮层修改或清空参数）、存在的 `@路径`、`skill://` 等具体资源 URI（经 `resource/inspect` 校验）、`#N`（本条第 N 张图，图标换成缩略图）与 `#name`（按路径引用的文件）。逐字键入中的那个 token 不成形，敲空白、移走光标、失焦、补全选中或粘贴后才变成控件。用户消息气泡用同一控件渲染正文引用，复制时带出原始 token。
+- 输入框是 CodeMirror 6（`ComposerEditor`），文本模型仍是纯字符串；有效引用渲染成引用控件（`RefChip`）：`rounded-md bg-accent` 灰底小胶囊，低饱和类型色图标（`file-icon.tsx`，与文件树、补全菜单、附件条共用）+ 短名，悬停 tooltip 给完整路径或说明，原子范围（光标跨过、退格整体删除）。认的引用：开头的已知 `/命令` 及其已落定的非自然语言参数（子命令、枚举、动态选项、路径、数值等统一收拢进同一胶囊，命令名正文色、参数 muted 色；自然语言正文留在胶囊外；带非自然语言参数的命令胶囊可点击展开参数编辑浮层修改或清空参数）、存在的 `@路径`、`skill://` 等具体资源 URI（经 `resource/inspect` 校验）、`#N`（本条第 N 张图，图标换成缩略图）与 `#name`（按路径引用的文件）。逐字键入中的那个 token 不成形，敲空白、移走光标、失焦、补全选中或粘贴后才变成控件。用户消息气泡用同一控件渲染正文引用，支持点击打开文件/目录或放大图片，复制时带出原始 token。
 - 输入卡左下是「+」（`AddContextMenu`）：Upload files（浏览器本地文件）、Server files（core 所在机器的文件选取器，多选、显示大小，选中直接按路径引用不复制），以及 Files / Folders / Commands / Skills / Plans / Session history / Tool outputs。后者只向光标处插入 `@`（文件、目录各带类型过滤）、`/`（仅空输入框）或 `skill://` 等前缀并弹出现有补全，不另做搜索面板；插入与打开选取器都在菜单完全关闭后执行，避免被当作外部点击关掉。
 - 图片附件：40px 方形缩略图（`object-cover` 铺满、`rounded-lg`、发丝 ring），左下角半透明底 `#N` 序号（与正文 `#N` 对应，删图后后续序号前移并改写正文），点击放大；删除是 20px 灰阶浮起圆钮（`bg-popover` + `--elevation-popover`，muted 图标，悬停变正文色），骑在右上角外凸 6px，悬停、键盘聚焦或触屏时出现，缩略图间距 12px 保证徽标不压邻图。模型不收图片时图片按普通文件处理。
 - 文件附件：缩略图下一行的 inline 附件条（图标 + `#name` + 大小，上传中图标换成旋转加载）。加入时在光标处插入 `#name`；上传到会话目录 `uploads/<sha256>/`，同内容只存一份、不重复传输；草稿会话在发送建出会话后才上传。core 只把路径与大小告诉模型，不内联内容。
@@ -141,7 +141,7 @@
 - 宽屏时检查面板是窗框里独立的一张圆角卡片（`bg-background` + `--elevation-ring` 发丝轮廓），与主舞台之间留 4px chrome 缝；标签带 3.5 号 lucide 图标，选中 `bg-accent`，标签条下不画分隔线，右端是面板开关（主舞台头部此时隐藏同一开关）。
 - 标签条末尾 `+` 打开「New tab」（`launcher` 分页）：居中搜索框（同 composer 柔影）+「Panels / Tools」两组 32px 行，行内图标 muted、说明 tertiary；回车打开首个命中项。
 - 文件工具栏左侧是根目录下拉（工作区显示目录名 / `Session`），不用分段控件；工具栏下与树右侧各一条 `border-border-subtle`。
-- 树行高 26px、`text-ui` 正文色、每级缩进 12px，行左右各缩 6px 并带 `rounded-md`：悬停 `surface-hover`、选中 `bg-accent`；目录只留 chevron，不放文件夹图标，文件按扩展名映射少量 tertiary lucide 图标；agent 改过的文件行尾一个 brand 小圆点。
+- 树行高 26px、`text-ui` 正文色、每级缩进 12px，行左右各缩 6px 并带 `rounded-md`：悬停 `surface-hover`、选中 `bg-accent`；目录只留 chevron，不放文件夹图标，文件复用 `file-icon.tsx` 按扩展名映射低饱和类型图标；agent 改过的文件行尾一个 brand 小圆点。
 - 会话空间命名空间（`plans` / `jobs` / `archive` / `history` / `skills`）显示英文标签，行尾用 tertiary 等宽字回显原始 URI；整体只读。
 - 文件头部的路径是 sans 面包屑：细箭头分隔，前段 muted、末段正文色。
 - 编辑区标签条复用「选中 `bg-accent`、未选中悬停浅底」的语言：预览标签斜体、未保存一个 brand 圆点、× 只在悬停浮现。
@@ -167,6 +167,7 @@
 对话正文、思考内容、计划正文共用一套规则，元素通过 `data-streamdown` 标记命中样式；新增 Markdown 渲染场景必须复用 `.moc-prose`，用 `--moc-prose-size` 调字号，不另写排版。
 
 - 正文 14px / 1.5 行高，硬换行（`<br>`）与列表项间追加 0.4em，段距 0.8em；标题无下边框，字间距 -0.005em。
+- 行内引用胶囊（对话正文、思考块、`/btw`、子代理报告、Markdown 预览、计划正文共用）：本地文件/目录、会话空间资源 URI 与外部链接统一渲染为 `bg-accent` 灰底小胶囊（`font-sans`、前置类型图标、可选 muted 行号范围如 `L532-725`、Tooltip 展示干净路径或完整 URL，长句外链允许 `box-decoration-break: clone` 折行，嵌套行内代码去除双重灰底，允许正文拖选复制）。裸正文与单 token 行内代码中的内部 URI（`local://` / `artifact://` / `history://` / `skill://` / `tool://`）必须经 `resource/inspect` 确认为真实存在才转胶囊，无效或示例写法保持原文。
 - 行内代码：半透明底、4px 圆角、0.88em 等宽，跨行时 `box-decoration-break: clone`。
 - 代码块：灰底大圆角，无语言头、无行号、无边框；复制按钮悬停才出现。
 - 表格：只留水平发丝线，表头透明底、中等字重、次级色，首末列贴边。

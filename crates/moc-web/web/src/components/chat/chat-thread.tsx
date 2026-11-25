@@ -9,7 +9,6 @@ import {
   ChevronRightIcon,
   CircleXIcon,
   CopyIcon,
-  FolderIcon,
   ListChecksIcon,
   Loader2Icon,
   PencilIcon,
@@ -46,6 +45,7 @@ import { AskCard, PermissionCard } from "@/components/chat/requests";
 import { IconButton } from "@/components/common/icon-button";
 import { DiffStat } from "@/components/panels/diff-file";
 import { Button } from "@/components/ui/button";
+import { FileTypeIcon, RefKindIcon } from "@/lib/file-icon";
 import { clockTime, formatDuration as formatElapsed } from "@/lib/format";
 import { type MsgKey, t, useT } from "@/lib/i18n";
 import { modelName } from "@/lib/models";
@@ -494,8 +494,10 @@ function UserMessage({
               <AttachmentPreview
                 fallbackIcon={
                   attachment.kind === "dir" ? (
-                    <FolderIcon className="size-3 text-muted-foreground" />
-                  ) : undefined
+                    <RefKindIcon kind="dir" className="size-3" />
+                  ) : (
+                    <FileTypeIcon name={attachment.path} className="size-3" />
+                  )
                 }
               />
               <AttachmentInfo />

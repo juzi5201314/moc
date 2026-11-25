@@ -4,16 +4,27 @@ import * as React from "react"
 import { cn } from "@/lib/utils"
 import { Tooltip as TooltipPrimitive } from "radix-ui"
 
+const TooltipProviderContext = React.createContext(false)
+
+function useHasTooltipProvider() {
+  return React.useContext(TooltipProviderContext)
+}
+
 function TooltipProvider({
   delayDuration = 0,
+  children,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
   return (
-    <TooltipPrimitive.Provider
-      data-slot="tooltip-provider"
-      delayDuration={delayDuration}
-      {...props}
-    />
+    <TooltipProviderContext.Provider value={true}>
+      <TooltipPrimitive.Provider
+        data-slot="tooltip-provider"
+        delayDuration={delayDuration}
+        {...props}
+      >
+        {children}
+      </TooltipPrimitive.Provider>
+    </TooltipProviderContext.Provider>
   )
 }
 
@@ -52,4 +63,4 @@ function TooltipContent({
   )
 }
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider }
+export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider, useHasTooltipProvider }
