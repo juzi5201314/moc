@@ -384,6 +384,10 @@ it("复制回复按需拼接全部正文，保留空段、顺序和流式入口"
     const button = thread.queryByRole("button", { name: "Copy reply" });
     expect(Boolean(button)).toBe(Boolean(expected));
     if (button) {
+      const footerBar = button.parentElement;
+      expect(footerBar?.classList.contains("opacity-0")).toBe(true);
+      expect(footerBar?.classList.contains("opacity-100")).toBe(false);
+      expect(footerBar?.classList.contains("group-hover/assistant:opacity-100")).toBe(true);
       fireEvent.click(button);
       expect(writeText).toHaveBeenLastCalledWith(expected);
       expect(replyJoins).toBe(1);

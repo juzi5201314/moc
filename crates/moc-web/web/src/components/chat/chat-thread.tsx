@@ -394,7 +394,7 @@ const TurnView = memo(function TurnView({
   const live = last && context.running;
   // 虚拟化后不在视口附近的行根本不挂载，contentVisibility 的占位尺寸反而干扰测量。
   return (
-    <section className="group/turn flex flex-col gap-3">
+    <section className="flex flex-col gap-3">
       {turn.user && <UserMessage block={turn.user} context={context} />}
       {(turn.segments.length > 0 || live) && (
         <AssistantTurn
@@ -780,7 +780,7 @@ function AssistantTurn({
   const innerFlat = inner.length === 1 && inner[0].kind === "work";
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="group/assistant flex flex-col gap-4">
       {live ? (
         // 已被正文收尾的段收起，常显片段紧随其标题；当前段还在进行，保持展开。
         parts.flatMap((part, index) => {
@@ -814,12 +814,7 @@ function AssistantTurn({
       {live && <LiveStatus sessionId={context.sessionId} turn={turn} startedAt={liveStartedAt} />}
 
       {!live && (hasCopyText || turn.footer || canRetry) && (
-        <div
-          className={cn(
-            "flex items-center gap-0.5 transition-opacity",
-            last ? "opacity-100" : "opacity-0 group-hover/turn:opacity-100 hover:opacity-100",
-          )}
-        >
+        <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/assistant:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
           {hasCopyText && (
             <IconButton
               label={t("th.copy_reply")}
