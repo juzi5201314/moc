@@ -46,7 +46,7 @@ Rust 编写的终端 AI 编码助手（Cargo workspace，edition 2024，Rust 1.8
 ## 边界
 
 - **Always**：谨慎添加测试，尽量少添加测试项目。
-- **Ask first**：增加外部依赖、改 CI/release 流程、改协议 schema
+- **Ask first**：增加外部依赖、改 CI/release 流程
 - **Never**：提交密钥与本地配置（`~/.moc/`）；手改生成物；为绕过测试而精简测试
 
 ## 维护本文件
