@@ -3,27 +3,62 @@ _version = 2
 [web.commands]
 debuginfo.desc = { zh = "查看工具调用统计、成功率与 context 压缩次数", en = "Show tool-call stats, success rate, and context compaction counts" }
 export.desc = { zh = "将当前 session 历史脱敏导出为 Markdown", en = "Export redacted session history as Markdown" }
+export.param.path.desc = { zh = "自定义保存路径，不覆盖已有文件", en = "Custom output file path; will not overwrite existing files" }
+export.param.path.placeholder = { zh = "例如 ./notes/session.md（留空使用默认路径）", en = "e.g. ./notes/session.md (leave empty for default)" }
+export.param.path.default = { zh = "保存到默认路径并自动下载 Markdown", en = "Export to the default path and download Markdown" }
 session.desc = { zh = "查看当前 session 身份、文件路径与分类存储大小", en = "Show current session identity, file path, and per-category storage size" }
 new.desc = { zh = "新建 session", en = "Start a new session" }
 resume.desc = { zh = "搜索并切换到历史 session", en = "Search and switch to a previous session" }
 close.desc = { zh = "关闭当前 session 并释放编辑锁", en = "Close the current session and release the edit lock" }
 plan.usage = { zh = "[prompt]", en = "[prompt]" }
 plan.desc = { zh = "进入或退出 plan 模式，可附带提示", en = "Enter or exit plan mode, optionally with a prompt" }
+plan.param.prompt.desc = { zh = "可选任务描述；选中或输入空格会立即切换 plan 模式，后续文字留作草稿", en = "Optional task prompt; selecting or typing a space toggles plan mode immediately and keeps trailing text as draft" }
+plan.param.prompt.placeholder = { zh = "输入计划任务描述…", en = "Describe what to plan..." }
+plan.param.prompt.default = { zh = "切换进入或退出 plan 模式", en = "Toggle plan mode on or off" }
 confirm_plan.desc = { zh = "重新审阅当前待审批计划", en = "Re-review the pending plan" }
 goal.desc = { zh = "查看或设置 session 目标，开启后自动续跑直至完成或停止", en = "View or set the session goal; auto-continues until completed or stopped" }
+goal.param.action.desc = { zh = "直接输入新目标文本，或选择子命令管理当前目标", en = "Enter a new objective directly, or choose a subcommand to manage the current goal" }
+goal.param.action.placeholder = { zh = "输入新的 session 目标，或选择子命令…", en = "Enter a new session goal, or pick a subcommand..." }
+goal.param.action.default = { zh = "查看当前 session 目标与续跑状态", en = "View current session goal and auto-continue status" }
+goal.choice.edit.desc = { zh = "修改当前目标描述原文", en = "Update the current goal objective text" }
+goal.param.edit_objective.desc = { zh = "替换当前目标的描述原文", en = "Replacement objective text for the current goal" }
+goal.param.edit_objective.placeholder = { zh = "输入修改后的目标描述…", en = "Enter the updated goal objective..." }
+goal.choice.pause.desc = { zh = "暂停自动续跑（保留目标）", en = "Pause auto-continue while keeping the goal" }
+goal.choice.resume.desc = { zh = "恢复自动续跑", en = "Resume auto-continue" }
+goal.choice.clear.desc = { zh = "清除当前 session 目标", en = "Clear the current session goal" }
 autonomy.desc = { zh = "切换自主程度，不带参数时依次循环", en = "Switch autonomy level; cycles without arguments" }
+autonomy.param.level.desc = { zh = "切换本 session 的自主执行档位", en = "Switch this session's autonomy level" }
+autonomy.param.level.default = { zh = "依次循环切换到下一档位", en = "Cycle to the next autonomy level" }
+autonomy.choice.default.desc = { zh = "常规确认：敏感操作与权限变更前询问", en = "Standard: ask before sensitive operations" }
+autonomy.choice.dont_ask.desc = { zh = "减少询问：常规读写与安全命令直接执行", en = "Auto: reduce prompts for routine edits and safe commands" }
+autonomy.choice.unattended.desc = { zh = "无人值守：全程自动执行，不等待人工审批", en = "Unattended: run autonomously without approval prompts" }
 permission.usage = { zh = "[<mode>|clear]", en = "[<mode>|clear]" }
 permission.desc = { zh = "切换 command 权限模式，或清空本 session 的 sandbox 授权", en = "Switch the command permission mode, or clear this session's sandbox grants" }
+permission.param.mode.desc = { zh = "切换 command 权限级别，或清空本 session 的授权记录", en = "Switch command permission mode or clear session sandbox grants" }
+permission.param.mode.default = { zh = "查看当前生效的权限模式", en = "Show the current permission mode" }
+permission.choice.clear.desc = { zh = "清空本 session 已记住的 sandbox 授权", en = "Clear remembered sandbox grants for this session" }
 ask.usage = { zh = "<question>", en = "<question>" }
 ask.desc = { zh = "只读问答：本条 prompt 不改动任何文件", en = "Read-only Q&A: this prompt does not modify files" }
+ask.param.question.desc = { zh = "只读提问内容，本轮回答不会修改任何文件", en = "Read-only question; this turn will not modify any files" }
+ask.param.question.placeholder = { zh = "输入只读问题…", en = "Ask a read-only question..." }
 retry.desc = { zh = "基于当前 context 重新生成回复", en = "Regenerate from the current context" }
 compact_skills.desc = { zh = "手动压缩 skills 目录或清理摘要 cache，不写入历史记录", en = "Manually compact the skills catalog or clear summary caches without writing history" }
+compact_skills.param.action.desc = { zh = "选择 skills 摘要目录的压缩或清理操作", en = "Choose how to compact or clean up skills summary caches" }
+compact_skills.param.action.default = { zh = "增量压缩尚未生成摘要的 skills（等同 compact）", en = "Incrementally compact skills missing summaries (same as compact)" }
+compact_skills.choice.compact.desc = { zh = "增量压缩尚未生成摘要的 skills", en = "Incrementally compact skills missing summaries" }
+compact_skills.choice.force.desc = { zh = "强制全量重新生成所有 skills 摘要", en = "Force regenerate summaries for all skills" }
+compact_skills.choice.cleanup.desc = { zh = "清理失效或孤立的 skills 摘要缓存", en = "Remove stale or orphaned skills summary caches" }
+compact_skills.param.cleanup_scope.desc = { zh = "可选范围，传入 all 将清空全部摘要缓存", en = "Optional scope; pass all to clear every summary cache" }
+compact_skills.param.cleanup_scope.default = { zh = "仅清理已失效的摘要缓存", en = "Clean up only stale summary caches" }
+compact_skills.choice.all.desc = { zh = "清空全部 skills 摘要缓存", en = "Clear all skills summary caches" }
 compact.desc = { zh = "压缩当前对话 context", en = "Compact the current context" }
 model.desc = { zh = "切换 model 与 thinking effort", en = "Switch model and thinking effort" }
 engine.desc = { zh = "切换 session 引擎（仅空白 session 可切）", en = "Cycle the session engine (blank sessions only)" }
 clm_experimental.desc = { zh = "切换 CLM 实验引擎，启用后本 session 固定使用 CLM", en = "Toggle the experimental CLM engine; once enabled this session is pinned to CLM" }
 btw.usage = { zh = "<question>", en = "<question>" }
 btw.desc = { zh = "旁路提问，不进入主对话 context", en = "Ask aside without entering the main conversation context" }
+btw.param.question.desc = { zh = "旁路提问内容，在右侧面板作答，不写入主对话 context", en = "Aside question answered in the side panel without entering main context" }
+btw.param.question.placeholder = { zh = "输入旁路问题…", en = "Ask an aside question..." }
 tools.desc = { zh = "查看下一轮请求实际发送的工具列表", en = "Show the tools sent in the next request" }
 context.desc = { zh = "查看当前 context 占用构成", en = "Inspect current context usage" }
 usage.desc = { zh = "查看本 session 的 token 与费用统计", en = "Show token and cost usage for this session" }
@@ -32,9 +67,21 @@ agents.desc = { zh = "查看当前 session 的 subagent 状态", en = "List suba
 jobs.desc = { zh = "查看和管理后台任务", en = "View and manage background jobs" }
 workflow.usage = { zh = "[instruction]", en = "[instruction]" }
 workflow.desc = { zh = "开启 workflow，可附带执行指令", en = "Activate workflow, optionally with instructions" }
+workflow.param.instruction.desc = { zh = "开启 workflow 后立即作为首条消息发送的执行指令", en = "Optional instruction sent immediately after activating workflow" }
+workflow.param.instruction.placeholder = { zh = "输入首条执行指令（可选）…", en = "Initial workflow instruction (optional)..." }
+workflow.param.instruction.default = { zh = "仅开启 workflow 模式", en = "Activate workflow mode without sending a prompt" }
 workflows.desc = { zh = "查看 workflow 运行记录", en = "List workflow runs" }
 mcp.desc = { zh = "查看 MCP 服务状态或手动重连", en = "Inspect MCP server status or reconnect" }
+mcp.param.action.desc = { zh = "查看 MCP 服务状态或触发重连", en = "Inspect MCP server status or trigger reconnection" }
+mcp.param.action.default = { zh = "打开 MCP 服务状态面板", en = "Open the MCP status popover" }
+mcp.choice.reconnect.desc = { zh = "重连全部 MCP 服务，或指定单个 server", en = "Reconnect all MCP servers, or specify a single server" }
+mcp.param.server.desc = { zh = "指定要重连的单个 MCP server", en = "Specific MCP server name to reconnect" }
+mcp.param.server.placeholder = { zh = "选择或输入 MCP server 名称（留空重连全部）", en = "Select or type an MCP server name (empty reconnects all)" }
+mcp.param.server.default = { zh = "重连全部已启用的 MCP 服务", en = "Reconnect all enabled MCP servers" }
 plugins.desc = { zh = "查看 plugin 来源、工具与斜杠命令", en = "Inspect plugins: sources, tools, and slash commands" }
+plugins.param.action.desc = { zh = "打开 plugin 管理页或重载 plugin", en = "Open plugins settings or reload plugins" }
+plugins.param.action.default = { zh = "打开 plugin 设置页", en = "Open plugins settings" }
+plugins.choice.reload.desc = { zh = "重新扫描并加载当前工作区与全局 plugin", en = "Rescan and reload workspace and global plugins" }
 features.desc = { zh = "查看特性开关阶段、状态与 context 开销", en = "Feature flags overview: stage, status, and context cost" }
 help.desc = { zh = "查看快捷键一览", en = "Show keyboard shortcuts" }
 doctor.desc = { zh = "诊断连接、服务端与平台运行环境", en = "Diagnose connectivity, server, and platform capabilities" }

@@ -85,10 +85,125 @@ pub enum DynamicArg {
     SandboxMode,
 }
 
+/// 参数填写形态：驱动前端的二级菜单、参数补全与输入引导。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamKind {
+    /// 自由文本（问题、提示、目标原文、执行指令等）。
+    Text,
+    /// 文件或目录路径。
+    Path,
+    /// 固定子命令或枚举候选（见 `choices`）。
+    Choice,
+    /// 运行时动态候选（见 `dynamic`），可同时附加静态 `choices`（如 `permission` 的 `clear`）。
+    Dynamic,
+}
+
+/// 运行时动态参数来源：前端从已有状态实时供给候选与状态标记。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DynamicSource {
+    /// 沙盒权限模式（`full` / `workspace` / `workspace_only`）。
+    SandboxMode,
+    /// 当前工作区的 MCP 服务列表。
+    McpServer,
+}
+
+/// 静态枚举或子命令候选声明。
+pub struct ParamChoiceSpec {
+    /// 填入命令行的字面值（如 `"pause"`、`"dont_ask"`、`"edit"`）。
+    pub value: &'static str,
+    /// 展示名（空串时直接使用 `value`；若命中 locale key 则翻译，否则原样）。
+    pub label: &'static str,
+    /// 一句话用途说明（locale key）。
+    pub description: &'static str,
+    /// 选中该子命令后的后续参数（如 `/goal edit <objective>`、`/mcp reconnect [server]`）。
+    pub params: &'static [CommandParamSpec],
+}
+
+/// 命令参数声明（静态定义，跨线边界按当前 locale 展开为 [`CommandParamMeta`]）。
+pub struct CommandParamSpec {
+    /// 参数标识（英文原文，如 `"path"`、`"question"`、`"action"`、`"mode"`、`"server"`）。
+    pub name: &'static str,
+    pub kind: ParamKind,
+    pub required: bool,
+    /// `Choice` 参数是否同时接受任意自由文本（如 `/goal` 既支持子命令也支持直接输入新目标）。
+    pub accepts_text: bool,
+    /// 参数用途说明（locale key）。
+    pub description: &'static str,
+    /// 输入框内联占位提示或格式示例（locale key；空串省略）。
+    pub placeholder: &'static str,
+    /// 可选参数留空时的默认行为说明（locale key；空串省略）。
+    pub default_behavior: &'static str,
+    /// 固定子命令或枚举候选。
+    pub choices: &'static [ParamChoiceSpec],
+    /// 动态候选来源。
+    pub dynamic: Option<DynamicSource>,
+}
+
+/// 可序列化的静态枚举 / 子命令候选元数据。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParamChoiceMeta {
+    pub value: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<std::borrow::Cow<'static, str>>,
+    pub description: std::borrow::Cow<'static, str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<CommandParamMeta>,
+}
+
+/// 可序列化的结构化参数元数据。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandParamMeta {
+    pub name: &'static str,
+    pub kind: ParamKind,
+    pub required: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub accepts_text: bool,
+    pub description: std::borrow::Cow<'static, str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<std::borrow::Cow<'static, str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_behavior: Option<std::borrow::Cow<'static, str>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<ParamChoiceMeta>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dynamic: Option<DynamicSource>,
+}
+
+impl ParamChoiceSpec {
+    pub fn meta(&self) -> ParamChoiceMeta {
+        ParamChoiceMeta {
+            value: self.value,
+            label: optional_text(self.label),
+            description: description_text(self.description),
+            params: self.params.iter().map(CommandParamSpec::meta).collect(),
+        }
+    }
+}
+
+impl CommandParamSpec {
+    pub fn meta(&self) -> CommandParamMeta {
+        CommandParamMeta {
+            name: self.name,
+            kind: self.kind,
+            required: self.required,
+            accepts_text: self.accepts_text,
+            description: description_text(self.description),
+            placeholder: optional_text(self.placeholder),
+            default_behavior: optional_text(self.default_behavior),
+            choices: self.choices.iter().map(ParamChoiceSpec::meta).collect(),
+            dynamic: self.dynamic,
+        }
+    }
+}
+
 /// 命令元数据的可序列化视图：发给非 Rust 前端（WebUI）时剥离 `id` 与
 /// `args`（id 是各前端内部分派键，`args` 引用前端自供的动态候选），
 /// `flag` 展开为 `config.get` 特性表里的键名，前端按 `features[flag]` 判开关。
-/// `usage`/`description` 在边界翻译为当前 locale 文案（JSON 形状不变，仍是 string）。
+/// `usage`/`description`/`params` 在边界翻译为当前 locale 文案。
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandMeta {
@@ -103,6 +218,9 @@ pub struct CommandMeta {
     pub available_in_side: bool,
     /// 特性键名（`FeatureSpec::key`）；`None` 表示不受 flag 门控。
     pub flag: Option<&'static str>,
+    /// 结构化参数元数据；无参数命令省略。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<CommandParamMeta>,
 }
 
 /// 一条内置斜杠命令的元数据。
@@ -155,9 +273,19 @@ pub fn try_translate(key: &str) -> Option<std::borrow::Cow<'static, str>> {
     moc_i18n::try_t(key)
 }
 
+/// 可选文案：空串转为 `None`，非空时优先查 locale 否则原样保留。
+fn optional_text(key: &'static str) -> Option<std::borrow::Cow<'static, str>> {
+    (!key.is_empty()).then(|| try_translate(key).unwrap_or(std::borrow::Cow::Borrowed(key)))
+}
+
 impl<I> CommandSpec<I> {
     /// 跨线元数据视图（见 [`CommandMeta`]）。
     pub fn meta(&self) -> CommandMeta {
+        self.meta_with_params(&[])
+    }
+
+    /// 跨线元数据视图（附加结构化参数声明）。
+    pub fn meta_with_params(&self, params: &'static [CommandParamSpec]) -> CommandMeta {
         CommandMeta {
             name: self.name,
             aliases: self.aliases,
@@ -168,6 +296,7 @@ impl<I> CommandSpec<I> {
             available_during_task: self.available_during_task,
             available_in_side: self.available_in_side,
             flag: self.flag.map(|flag| flag.spec().key),
+            params: params.iter().map(CommandParamSpec::meta).collect(),
         }
     }
 }

@@ -30,11 +30,20 @@ import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { Popover, PopoverAnchor } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  buildCommandEntries,
+  buildSubmenuItems,
+  type CommandContext,
+  firstEnabledIndex,
+  resolveStage2,
+  type SubmenuAction,
+  stepEnabledIndex,
+} from "@/lib/command-params";
 import { t, useT } from "@/lib/i18n";
 import { leadSelector, parseSelector } from "@/lib/models";
 import { useRefInfo } from "@/lib/ref-inspect";
 import { insertToken, remapImageRefs, scanRefs, uniqueRefName } from "@/lib/refs";
-import { commandToken, fromMeta, runSlash, type SlashCommand, slashMatches } from "@/lib/slash";
+import { commandToken, fromMeta, runSlash, type SlashCommand } from "@/lib/slash";
 import { cn, formatBytes } from "@/lib/utils";
 import { uploadSessionFile } from "@/lib/web-api";
 import { rpc } from "@/protocol/client";
@@ -50,11 +59,13 @@ import {
 } from "@/store/composer";
 import { selectCommands, selectFeatures, selectModels, useConnection } from "@/store/connection";
 import { reacquire, togglePlanMode } from "@/store/lifecycle";
+import { useMcp } from "@/store/mcp";
 import { usePrefs } from "@/store/prefs";
 import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
 import { AddContextMenu, type AttachKind } from "./add-context-menu";
+import { CommandArgMenu, CommandMenu, CommandParamHint } from "./command-menu";
 import { ComposerEditor, type ComposerEditorHandle, type EditorChip } from "./composer-editor";
 import {
   ComposerStatus,
@@ -204,7 +215,14 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const [reading, setReading] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
-  /** Esc 关闭补全时记下当时的输入，内容变化前不再弹出。 */
+  /** 命令浮层键盘焦点所在面板：list=一级命令列表，sub=右侧二级菜单。 */
+  const [focusPane, setFocusPane] = useState<"list" | "sub">("list");
+  const [subActiveIndex, setSubActiveIndex] = useState(-1);
+  /** 混合命令从二级菜单点选自由文本入口时记录输入串，阶段二跳过子命令列表直入文本引导。 */
+  const [preferHintFor, setPreferHintFor] = useState<string | null>(null);
+  /** 必填参数为空时按下回车触发的温和强调态，下次编辑即清除。 */
+  const [missingParamError, setMissingParamError] = useState(false);
+  /** Esc 关闭补全或叶子填充后记下当时的输入，内容变化前不再弹出。 */
   const [dismissedAt, setDismissedAt] = useState<string | null>(null);
   const [resources, setResources] = useState<{
     prefix: string;
@@ -245,6 +263,9 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const todos = useMemo(() => (phases ?? []).flatMap((phase) => phase.items), [phases]);
   const cwd = useTranscript((state) => state.bySession[sessionId]?.info.cwd);
   const draftCwd = useSessions((state) => state.draftSession?.cwd);
+  const defaultCwd = useConnection((state) => state.config?.cwd);
+  const effectiveCwd = (isDraft ? draftCwd : cwd) ?? defaultCwd;
+  const mcpSnapshot = useMcp((state) => (effectiveCwd ? state.byCwd[effectiveCwd] : undefined));
 
   // ---------- 补全 ----------
 
@@ -261,7 +282,29 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     const builtin = new Set(builtinCommands.map((command) => command.name));
     return [...builtinCommands, ...pluginCommands.filter((command) => !builtin.has(command.name))];
   }, [builtinMetas, pluginCommands]);
-  const slashItems = slashMatches(text, commands, features);
+  const commandCtx = useMemo<CommandContext>(
+    () => ({
+      isDraft,
+      promptRunning,
+      skillsWorking,
+      autonomy: info?.autonomy,
+      permission: isDraft ? draftPermission : info?.permission,
+      mcpServers: mcpSnapshot?.servers,
+    }),
+    [
+      isDraft,
+      promptRunning,
+      skillsWorking,
+      info?.autonomy,
+      info?.permission,
+      draftPermission,
+      mcpSnapshot?.servers,
+    ],
+  );
+  const commandEntries = useMemo(
+    () => (dismissedAt === text ? [] : buildCommandEntries(text, commands, features, commandCtx)),
+    [dismissedAt, text, commands, features, commandCtx],
+  );
 
   // ---------- 引用控件 ----------
 
@@ -357,32 +400,89 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     token && resources.prefix === tokenPrefix && resources.kind === attachKind
       ? resources.items
       : [];
-  const menu: { heading: string; items: Suggestion[] } | null =
-    dismissedAt === text
-      ? null
-      : slashItems.length > 0
-        ? {
-            heading: t("cb.cmds"),
-            items: slashItems.map((command) => ({
-              key: `/${command.name}`,
-              title: `/${command.name}`,
-              hint: command.usage,
-              detail: command.description || undefined,
-              source: command.plugin,
-            })),
-          }
-        : resourceItems.length > 0
-          ? {
-              heading: t("cb.resources"),
-              items: resourceItems.map(resourceSuggestion),
-            }
-          : null;
-  const menuSize = menu?.items.length ?? 0;
+  const activeResourceSuggestions = useMemo(
+    () => (dismissedAt === text ? [] : resourceItems.map(resourceSuggestion)),
+    [dismissedAt, text, resourceItems],
+  );
+  // 资源补全（`@路径` / `skill://`）在命令参数内优先弹出，不与阶段二参数浮层冲突。
+  const stage2 = useMemo(
+    () =>
+      dismissedAt === text ||
+      commandEntries.length > 0 ||
+      activeResourceSuggestions.length > 0 ||
+      token !== null
+        ? null
+        : resolveStage2(text, cursor, commands, features, commandCtx, preferHintFor === text),
+    [
+      dismissedAt,
+      text,
+      commandEntries.length,
+      activeResourceSuggestions.length,
+      token,
+      cursor,
+      commands,
+      features,
+      commandCtx,
+      preferHintFor,
+    ],
+  );
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: 候选集合变化（数量或类别）时把高亮复位到首项
+  const activeOverlay =
+    commandEntries.length > 0
+      ? "commands"
+      : activeResourceSuggestions.length > 0
+        ? "resources"
+        : stage2?.kind === "choices"
+          ? "args"
+          : stage2?.kind === "hint"
+            ? "hint"
+            : null;
+  const activeCommandEntry =
+    activeOverlay === "commands"
+      ? commandEntries[Math.min(Math.max(activeIndex, 0), commandEntries.length - 1)]
+      : undefined;
+  const activeSubmenu = useMemo(
+    () =>
+      activeCommandEntry
+        ? buildSubmenuItems(activeCommandEntry.command, commandCtx)
+        : { sections: [], flat: [] },
+    [activeCommandEntry, commandCtx],
+  );
+  const ghostHint =
+    !bashMode && activeResourceSuggestions.length === 0 && token === null
+      ? stage2?.ghostPlaceholder
+      : undefined;
+
+  // 当前工作区尚未拉过 MCP 快照时，高亮 `/mcp` 或进入 `/mcp ` 时按需刷新一次以提供实时 server 列表。
+  const needsMcpServers =
+    !mcpSnapshot &&
+    Boolean(effectiveCwd) &&
+    (activeCommandEntry?.command.name === "mcp" || stage2?.command.name === "mcp");
   useEffect(() => {
-    setActiveIndex(0);
-  }, [menuSize, menu?.heading]);
+    if (!needsMcpServers || !effectiveCwd) return;
+    void useMcp
+      .getState()
+      .refresh(isDraft ? { cwd: effectiveCwd } : { sessionId, cwd: effectiveCwd })
+      .catch(() => undefined);
+  }, [needsMcpServers, effectiveCwd, isDraft, sessionId]);
+
+  const commandListKey =
+    activeOverlay === "commands"
+      ? commandEntries
+          .map((entry) => `${entry.command.name}:${entry.disabledReason ?? ""}`)
+          .join("|")
+      : activeOverlay === "args" && stage2?.kind === "choices"
+        ? stage2.items.map((item) => item.key).join("|")
+        : activeOverlay === "resources"
+          ? String(activeResourceSuggestions.length)
+          : "";
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 候选集合变化时复位高亮与二级面板焦点
+  useEffect(() => {
+    setFocusPane("list");
+    setSubActiveIndex(-1);
+    setActiveIndex(activeOverlay === "commands" ? firstEnabledIndex(commandEntries) : 0);
+  }, [activeOverlay, commandListKey]);
 
   // ---------- 输入框 ----------
 
@@ -409,13 +509,30 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   );
 
   const setText = (value: string, caret?: number) => {
-    if (value !== text) setDismissedAt(null);
+    if (value !== text) {
+      setDismissedAt(null);
+      setMissingParamError(false);
+      if (preferHintFor !== value) setPreferHintFor(null);
+    }
     useComposer.getState().setText(sessionId, value);
     if (caret !== undefined) {
       setCursor(caret);
       setTypingAt(null);
       requestAnimationFrame(() => editorRef.current?.setCaret(caret));
     }
+  };
+
+  /** 填入命令或参数文本到输入框（不自动执行），光标落至末尾并按需关闭或续展补全。 */
+  const fillCommandText = (value: string, closeMenu: boolean, preferHint = false) => {
+    useComposer.getState().setText(sessionId, value);
+    setDismissedAt(closeMenu ? value : null);
+    setPreferHintFor(preferHint ? value : null);
+    setFocusPane("list");
+    setSubActiveIndex(-1);
+    setMissingParamError(false);
+    setCursor(value.length);
+    setTypingAt(null);
+    requestAnimationFrame(() => editorRef.current?.setCaret(value.length));
   };
 
   /** `/plan` 一经确认（补全选中或其后键入空白）即切换 plan 叠加态，命令本身不留在输入框。 */
@@ -431,16 +548,41 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     return true;
   };
 
-  const pick = (index: number) => {
-    if (!menu) return;
-    if (menu.heading === t("cb.cmds")) {
-      const command = slashItems[index];
-      if (!command) return;
-      if (!command.plugin && command.name === "plan") consumePlan("");
-      else if (command.usage) setText(`/${command.name} `, command.name.length + 2);
-      else if (runSlash(sessionId, `/${command.name}`, commands, features)) setCursor(0);
+  const pickCommand = (index: number) => {
+    const entry = commandEntries[index];
+    if (!entry) return;
+    if (entry.disabledReason) {
+      toast(entry.disabledReason);
       return;
     }
+    const command = entry.command;
+    if (!command.plugin && command.name === "plan") {
+      consumePlan("");
+      return;
+    }
+    if (command.params?.length || command.usage) {
+      fillCommandText(`/${command.name} `, false);
+      return;
+    }
+    if (runSlash(sessionId, `/${command.name}`, commands, features)) setCursor(0);
+  };
+
+  const pickSubAction = (action: SubmenuAction) => {
+    if (activeCommandEntry?.disabledReason) {
+      toast(activeCommandEntry.disabledReason);
+      return;
+    }
+    fillCommandText(action.fillText, action.closeMenu, Boolean(action.preferHint));
+  };
+
+  const pickArgChoice = (index: number) => {
+    if (stage2?.kind !== "choices") return;
+    const item = stage2.items[index];
+    if (!item) return;
+    fillCommandText(item.fillText, item.closeMenu);
+  };
+
+  const pickResource = (index: number) => {
     const candidate = resourceItems[index];
     if (!candidate || !token) return;
     const suffix = candidate.append_space ? " " : "";
@@ -641,6 +783,15 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       void runBash(sessionId, command, exclude);
       return;
     }
+    // 必填命令参数留空直接回车：保留草稿，点亮参数引导条上的必填提示。
+    if (!attached) {
+      const pendingHint = resolveStage2(text, text.length, commands, features, commandCtx);
+      if (pendingHint?.kind === "hint" && pendingHint.missingRequired) {
+        setDismissedAt(null);
+        setMissingParamError(true);
+        return;
+      }
+    }
     // `.` 独占整条输入时是 /retry 的快捷写法：转写成命令，走同一套门控。
     const dispatch = trimmed === "." ? "/retry" : trimmed;
     if (!attached && runSlash(sessionId, dispatch, commands, features)) return;
@@ -770,20 +921,82 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       event.preventDefault();
       return true;
     };
-    if (menu && menuSize > 0) {
+    if (activeOverlay === "commands" && commandEntries.length > 0) {
+      const subCount = activeSubmenu.flat.length;
+      if (focusPane === "sub" && subCount > 0) {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          const step = event.key === "ArrowDown" ? 1 : -1;
+          setSubActiveIndex((index) => (index < 0 ? 0 : (index + step + subCount) % subCount));
+          return handled();
+        }
+        if (event.key === "ArrowLeft" || event.key === "Escape") {
+          setFocusPane("list");
+          setSubActiveIndex(-1);
+          return handled();
+        }
+        if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey && !event.altKey)) {
+          const chosen = activeSubmenu.flat[Math.max(subActiveIndex, 0)];
+          if (chosen) pickSubAction(chosen);
+          return handled();
+        }
+      } else {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          const step = event.key === "ArrowDown" ? 1 : -1;
+          setActiveIndex((index) => stepEnabledIndex(commandEntries, index, step));
+          return handled();
+        }
+        if (
+          event.key === "ArrowRight" &&
+          activeCommandEntry &&
+          !activeCommandEntry.disabledReason &&
+          subCount > 0
+        ) {
+          setFocusPane("sub");
+          setSubActiveIndex(0);
+          return handled();
+        }
+        if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey && !event.altKey)) {
+          pickCommand(activeIndex);
+          return handled();
+        }
+        if (event.key === "Escape") {
+          setDismissedAt(text);
+          return handled();
+        }
+      }
+    } else if (activeOverlay === "args" && stage2?.kind === "choices" && stage2.items.length > 0) {
+      const count = stage2.items.length;
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         const step = event.key === "ArrowDown" ? 1 : -1;
-        setActiveIndex((index) => (index + step + menuSize) % menuSize);
+        setActiveIndex((index) => (index + step + count) % count);
         return handled();
       }
       if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey && !event.altKey)) {
-        pick(activeIndex);
+        pickArgChoice(activeIndex);
         return handled();
       }
       if (event.key === "Escape") {
         setDismissedAt(text);
         return handled();
       }
+    } else if (activeOverlay === "resources" && activeResourceSuggestions.length > 0) {
+      const count = activeResourceSuggestions.length;
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        setActiveIndex((index) => (index + step + count) % count);
+        return handled();
+      }
+      if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey && !event.altKey)) {
+        pickResource(activeIndex);
+        return handled();
+      }
+      if (event.key === "Escape") {
+        setDismissedAt(text);
+        return handled();
+      }
+    } else if (activeOverlay === "hint" && event.key === "Escape") {
+      setDismissedAt(text);
+      return handled();
     }
     if (event.key === "Escape" && running && !text) {
       stop();
@@ -985,7 +1198,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
             )}
 
             <Popover
-              open={menu !== null}
+              open={activeOverlay !== null}
               onOpenChange={(open) => {
                 if (!open) setDismissedAt(text);
               }}
@@ -997,15 +1210,20 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                     value={text}
                     chips={stableChips}
                     placeholder={placeholder}
+                    ghostHint={ghostHint}
                     className={cn("text-sm leading-6 text-foreground", bashMode && "font-mono")}
                     minHeight={inline ? 76 : 64}
                     maxHeight={MAX_HEIGHT}
                     attributes={{
                       "aria-label": t("cb.input"),
                       "aria-autocomplete": "list",
-                      ...(menu ? { "aria-controls": suggestionsId } : {}),
-                      ...(menu?.items[activeIndex]
-                        ? { "aria-activedescendant": `${suggestionsId}-${activeIndex}` }
+                      ...(activeOverlay === "commands" ||
+                      activeOverlay === "args" ||
+                      activeOverlay === "resources"
+                        ? {
+                            "aria-controls": suggestionsId,
+                            "aria-activedescendant": `${suggestionsId}-${activeIndex}`,
+                          }
                         : {}),
                     }}
                     onChange={onEditorChange}
@@ -1016,15 +1234,57 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                   />
                 </div>
               </PopoverAnchor>
-              {menu && (
+              {activeOverlay === "commands" && (
+                <CommandMenu
+                  id={suggestionsId}
+                  side={inline ? "bottom" : "top"}
+                  entries={commandEntries}
+                  active={activeIndex}
+                  focusPane={focusPane}
+                  subActive={subActiveIndex}
+                  ctx={commandCtx}
+                  onPickCommand={pickCommand}
+                  onHoverCommand={(index) => {
+                    setActiveIndex(index);
+                    setFocusPane("list");
+                    setSubActiveIndex(-1);
+                  }}
+                  onPickSubAction={pickSubAction}
+                  onHoverSubAction={(index) => {
+                    setFocusPane("sub");
+                    setSubActiveIndex(index);
+                  }}
+                  inputRef={editorBoxRef}
+                />
+              )}
+              {activeOverlay === "args" && stage2?.kind === "choices" && (
+                <CommandArgMenu
+                  id={suggestionsId}
+                  side={inline ? "bottom" : "top"}
+                  state={stage2}
+                  active={activeIndex}
+                  onPick={pickArgChoice}
+                  onHover={setActiveIndex}
+                  inputRef={editorBoxRef}
+                />
+              )}
+              {activeOverlay === "hint" && stage2?.kind === "hint" && (
+                <CommandParamHint
+                  side={inline ? "bottom" : "top"}
+                  state={stage2}
+                  missingError={missingParamError}
+                  inputRef={editorBoxRef}
+                />
+              )}
+              {activeOverlay === "resources" && (
                 <SuggestionMenu
                   id={suggestionsId}
                   side={inline ? "bottom" : "top"}
-                  wide={menu.heading !== t("cb.cmds")}
-                  heading={menu.heading}
-                  items={menu.items}
+                  wide
+                  heading={t("cb.resources")}
+                  items={activeResourceSuggestions}
                   active={activeIndex}
-                  onPick={pick}
+                  onPick={pickResource}
                   onHover={setActiveIndex}
                   inputRef={editorBoxRef}
                 />

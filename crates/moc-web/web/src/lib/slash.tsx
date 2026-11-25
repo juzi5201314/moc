@@ -4,11 +4,13 @@
 
 import { toast } from "sonner";
 import { AUTONOMY } from "@/lib/autonomy";
+import { isCommandFlagDisabled, slashMatches } from "@/lib/command-params";
 import { type MsgKey, t } from "@/lib/i18n";
 import { applySessionEngine, cycleSessionEngine } from "@/lib/shortcuts";
 import { rpc } from "@/protocol/client";
 import type {
   CommandMeta,
+  CommandParamMeta,
   GoalAction,
   PluginRunCommandResult,
   SessionExportResult,
@@ -59,6 +61,8 @@ export type SlashCommand = {
   needsSession?: boolean;
   /** 生成中可执行；false 时运行中给出提示。 */
   availableDuringTask?: boolean;
+  /** 结构化参数定义；插件命令无此字段时退回 `usage`。 */
+  params?: CommandParamMeta[];
   plugin?: string;
 };
 
@@ -73,6 +77,7 @@ export function fromMeta(meta: CommandMeta): SlashCommand {
     flag: meta.flag,
     needsSession: meta.needsSession,
     availableDuringTask: meta.availableDuringTask,
+    params: meta.params?.length ? meta.params : undefined,
   };
 }
 
@@ -97,30 +102,7 @@ export function commandToken(
   return { start, end: start + parsed.name.length + 1 };
 }
 
-/** flag 关闭的命令（`features` 未加载时视为开启）。 */
-function flagDisabled(command: SlashCommand, features?: Record<string, boolean>): boolean {
-  return command.flag !== undefined && features?.[command.flag] === false;
-}
-
-/** 补全候选：只在输入还是单个 `/token`（未输入空格）时出现；flag 关闭的不提示。 */
-export function slashMatches(
-  text: string,
-  commands: SlashCommand[],
-  features?: Record<string, boolean>,
-): SlashCommand[] {
-  if (!/^\/[\w-]*$/.test(text)) return [];
-  const query = text.slice(1).toLowerCase();
-  return commands
-    .filter(
-      (command) =>
-        !flagDisabled(command, features) &&
-        (command.name.toLowerCase().startsWith(query) ||
-          command.aliases?.some((alias) => alias.toLowerCase().startsWith(query))),
-    )
-    .sort(
-      (a, b) => Number(b.name.toLowerCase() === query) - Number(a.name.toLowerCase() === query),
-    );
-}
+export { slashMatches };
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -150,7 +132,7 @@ export function runSlash(
     toast(t("slash.skills_busy"));
     return true;
   }
-  if (flagDisabled(command, features)) {
+  if (isCommandFlagDisabled(command, features)) {
     toast(t("slash.flag_disabled", { name: command.name, flag: command.flag ?? "" }));
     return true;
   }
@@ -168,6 +150,11 @@ export function runSlash(
   }
   if (!command.plugin && command.usage?.startsWith("<") && !args) {
     toast(t("slash.usage", { usage: `/${command.name} ${command.usage}` }));
+    return true;
+  }
+  // `/goal edit` 缺少新目标原文时保留草稿，避免用户输入被清空。
+  if (!command.plugin && command.name === "goal" && args.trim() === "edit") {
+    toast(t("slash.usage", { usage: "/goal edit <objective>" }));
     return true;
   }
   composer.clearDraft(sessionId);

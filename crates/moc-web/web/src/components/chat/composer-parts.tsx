@@ -803,7 +803,7 @@ const SIDE_CARD_MIN_WIDTH = 220;
 const SIDE_CHROME_PX = 20;
 
 /** 按码点下标高亮命中字符；无命中时原样返回文本。 */
-function Highlighted({ text, matches }: { text: string; matches?: number[] }) {
+export function Highlighted({ text, matches }: { text: string; matches?: number[] }) {
   if (!matches?.length) return text;
   const hit = new Set(matches);
   const parts: { text: string; hit: boolean }[] = [];
@@ -857,7 +857,7 @@ type MenuLayout = {
  * - 等外层 Radix Popper 结束 `translate(0, -200%)` 预测量后再挂载侧边浮层，避免首帧闪到屏外；
  * - 任一侧可用宽度 ≥ 220px 时启用侧边独立详情卡，否则降级为远离输入框一端的内嵌栏。
  */
-function useSuggestionLayout(
+export function useSuggestionLayout(
   menuEl: HTMLDivElement | null,
   preferredSide: "top" | "bottom",
 ): MenuLayout {

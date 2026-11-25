@@ -40,6 +40,8 @@ type Props = {
   /** 升序、互不重叠，坐标对应 `value`。 */
   chips: EditorChip[];
   placeholder: string;
+  /** 紧跟在当前文本末尾的轻量行内参数占位提示（如 `/ask ` 后的引导文案），不参与文本内容。 */
+  ghostHint?: string;
   className?: string;
   minHeight: number;
   maxHeight: number;
@@ -87,6 +89,28 @@ class ChipWidget extends WidgetType {
   }
 }
 
+class GhostHintWidget extends WidgetType {
+  readonly text: string;
+  constructor(text: string) {
+    super();
+    this.text = text;
+  }
+  eq(other: GhostHintWidget) {
+    return other.text === this.text;
+  }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "pointer-events-none select-none text-text-tertiary";
+    span.setAttribute("aria-hidden", "true");
+    span.dataset.slot = "composer-ghost-hint";
+    span.textContent = this.text;
+    return span;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
 const setChips = StateEffect.define<DecorationSet>();
 const chipField = StateField.define<DecorationSet>({
   create: () => Decoration.none,
@@ -99,6 +123,17 @@ const chipField = StateField.define<DecorationSet>({
     EditorView.decorations.from(field),
     EditorView.atomicRanges.of((view) => view.state.field(field)),
   ],
+});
+
+const setGhostHint = StateEffect.define<DecorationSet>();
+const ghostHintField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(value, transaction) {
+    let next = value.map(transaction.changes);
+    for (const effect of transaction.effects) if (effect.is(setGhostHint)) next = effect.value;
+    return next;
+  },
+  provide: (field) => EditorView.decorations.from(field),
 });
 
 /** 外部同步写入的标记：不回调 onChange，避免与受控 value 互相触发。 */
@@ -129,6 +164,7 @@ export function ComposerEditor({
   value,
   chips,
   placeholder,
+  ghostHint,
   className,
   minHeight,
   maxHeight,
@@ -174,6 +210,7 @@ export function ComposerEditor({
           EditorView.lineWrapping,
           baseTheme,
           chipField,
+          ghostHintField,
           placeholderConf.of(placeholderText(placeholder)),
           attributesConf.of(EditorView.contentAttributes.of(attributes)),
           sizeConf.of(sizeTheme(minHeight, maxHeight)),
@@ -229,8 +266,16 @@ export function ComposerEditor({
         ),
       true,
     );
+    const ghostDecorations =
+      ghostHint && value.length > 0
+        ? Decoration.set([
+            Decoration.widget({ widget: new GhostHintWidget(ghostHint), side: 1 }).range(
+              value.length,
+            ),
+          ])
+        : Decoration.none;
     if (current === value) {
-      view.dispatch({ effects: setChips.of(decorations) });
+      view.dispatch({ effects: [setChips.of(decorations), setGhostHint.of(ghostDecorations)] });
       return;
     }
     let start = 0;
@@ -250,9 +295,9 @@ export function ComposerEditor({
         insert: value.slice(start, value.length - end),
       },
       annotations: external.of(true),
-      effects: setChips.of(decorations),
+      effects: [setChips.of(decorations), setGhostHint.of(ghostDecorations)],
     });
-  }, [value, chips]);
+  }, [value, chips, ghostHint]);
 
   useEffect(() => {
     viewRef.current?.dispatch({

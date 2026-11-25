@@ -3,7 +3,10 @@
 //! `needs_session` 标记草稿会话不可用的命令（web 的草稿会被发送动作物化，
 //! 所以 plan/autonomy/model/ask 不标）。
 
-use moc_protocol::commands::{ArgCompletion, CommandGroup, CommandMeta, CommandSpec, DynamicArg};
+use moc_protocol::commands::{
+    ArgCompletion, CommandGroup, CommandMeta, CommandParamSpec, CommandSpec, DynamicArg,
+    DynamicSource, ParamChoiceSpec, ParamKind,
+};
 use moc_protocol::features::FeatureFlag;
 
 /// WebUI 内置命令 id（Rust 侧登记键；前端按名字分派，不跨线传输）。
@@ -513,9 +516,280 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
     },
 ];
 
-/// 交付给前端的元数据清单（剥离 `id`/`args`，`flag` 是特性键名）。
+const EXPORT_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
+    name: "path",
+    kind: ParamKind::Path,
+    required: false,
+    accepts_text: false,
+    description: "web.commands.export.param.path.desc",
+    placeholder: "web.commands.export.param.path.placeholder",
+    default_behavior: "web.commands.export.param.path.default",
+    choices: &[],
+    dynamic: None,
+}];
+
+const PLAN_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
+    name: "prompt",
+    kind: ParamKind::Text,
+    required: false,
+    accepts_text: false,
+    description: "web.commands.plan.param.prompt.desc",
+    placeholder: "web.commands.plan.param.prompt.placeholder",
+    default_behavior: "web.commands.plan.param.prompt.default",
+    choices: &[],
+    dynamic: None,
+}];
+
+const GOAL_EDIT_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
+    name: "objective",
+    kind: ParamKind::Text,
+    required: true,
+    accepts_text: false,
+    description: "web.commands.goal.param.edit_objective.desc",
+    placeholder: "web.commands.goal.param.edit_objective.placeholder",
+    default_behavior: "",
+    choices: &[],
+    dynamic: None,
+}];
+
+const GOAL_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
+    name: "objective",
+    kind: ParamKind::Choice,
+    required: false,
+    accepts_text: true,
+    description: "web.commands.goal.param.action.desc",
+    placeholder: "web.commands.goal.param.action.placeholder",
+    default_behavior: "web.commands.goal.param.action.default",
+    choices: &[
+        ParamChoiceSpec {
+            value: "edit",
+            label: "",
+            description: "web.commands.goal.choice.edit.desc",
+            params: GOAL_EDIT_PARAMS,
+        },
+        ParamChoiceSpec {
+            value: "pause",
+            label: "",
+            description: "web.commands.goal.choice.pause.desc",
+            params: &[],
+        },
+        ParamChoiceSpec {
+            value: "resume",
+            label: "",
+            description: "web.commands.goal.choice.resume.desc",
+            params: &[],
+        },
+        ParamChoiceSpec {
+            value: "clear",
+            label: "",
+            description: "web.commands.goal.choice.clear.desc",
+            params: &[],
+        },
+    ],
+    dynamic: None,
+}];
+
+const AUTONOMY_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
+    name: "level",
+    kind: ParamKind::Choice,
+    required: false,
+    accepts_text: false,
+    description: "web.commands.autonomy.param.level.desc",
+    placeholder: "",
+    default_behavior: "web.commands.autonomy.param.level.default",
+    choices: &[
+        ParamChoiceSpec {
+            value: "default",
+            label: "",
+            description: "web.commands.autonomy.choice.default.desc",
+            params: &[],
+        },
+        ParamChoiceSpec {
+            value: "dont_ask",
+            label: "",
+            description: "web.commands.autonomy.choice.dont_ask.desc",
+            params: &[],
+        },
+        ParamChoiceSpec {
+            value: "unattended",
+            label: "",
+            description: "web.commands.autonomy.choice.unattended.desc",
+            params: &[],
+        },
+    ],
+    dynamic: None,
+}];
+
+const PERMISSION_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
+    name: "mode",
+    kind: ParamKind::Dynamic,
+    required: false,
+    accepts_text: false,
+    description: "web.commands.permission.param.mode.desc",
+    placeholder: "",
+    default_behavior: "web.commands.permission.param.mode.default",
+    choices: &[ParamChoiceSpec {
+        value: "clear",
+        label: "",
+        description: "web.commands.permission.choice.clear.desc",
+        params: &[],
+    }],
+    dynamic: Some(DynamicSource::SandboxMode),
+}];
+
+const ASK_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
+    name: "question",
+    kind: ParamKind::Text,
+    required: true,
+    accepts_text: false,
+    description: "web.commands.ask.param.question.desc",
+    placeholder: "web.commands.ask.param.question.placeholder",
+    default_behavior: "",
+    choices: &[],
+    dynamic: None,
+}];
+
+const COMPACT_SKILLS_CLEANUP_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
+    name: "scope",
+    kind: ParamKind::Choice,
+    required: false,
+    accepts_text: false,
+    description: "web.commands.compact_skills.param.cleanup_scope.desc",
+    placeholder: "",
+    default_behavior: "web.commands.compact_skills.param.cleanup_scope.default",
+    choices: &[ParamChoiceSpec {
+        value: "all",
+        label: "",
+        description: "web.commands.compact_skills.choice.all.desc",
+        params: &[],
+    }],
+    dynamic: None,
+}];
+
+const COMPACT_SKILLS_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
+    name: "action",
+    kind: ParamKind::Choice,
+    required: false,
+    accepts_text: false,
+    description: "web.commands.compact_skills.param.action.desc",
+    placeholder: "",
+    default_behavior: "web.commands.compact_skills.param.action.default",
+    choices: &[
+        ParamChoiceSpec {
+            value: "compact",
+            label: "",
+            description: "web.commands.compact_skills.choice.compact.desc",
+            params: &[],
+        },
+        ParamChoiceSpec {
+            value: "force",
+            label: "",
+            description: "web.commands.compact_skills.choice.force.desc",
+            params: &[],
+        },
+        ParamChoiceSpec {
+            value: "cleanup",
+            label: "",
+            description: "web.commands.compact_skills.choice.cleanup.desc",
+            params: COMPACT_SKILLS_CLEANUP_PARAMS,
+        },
+    ],
+    dynamic: None,
+}];
+
+const BTW_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
+    name: "question",
+    kind: ParamKind::Text,
+    required: true,
+    accepts_text: false,
+    description: "web.commands.btw.param.question.desc",
+    placeholder: "web.commands.btw.param.question.placeholder",
+    default_behavior: "",
+    choices: &[],
+    dynamic: None,
+}];
+
+const WORKFLOW_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
+    name: "instruction",
+    kind: ParamKind::Text,
+    required: false,
+    accepts_text: false,
+    description: "web.commands.workflow.param.instruction.desc",
+    placeholder: "web.commands.workflow.param.instruction.placeholder",
+    default_behavior: "web.commands.workflow.param.instruction.default",
+    choices: &[],
+    dynamic: None,
+}];
+
+const MCP_RECONNECT_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
+    name: "server",
+    kind: ParamKind::Dynamic,
+    required: false,
+    accepts_text: false,
+    description: "web.commands.mcp.param.server.desc",
+    placeholder: "web.commands.mcp.param.server.placeholder",
+    default_behavior: "web.commands.mcp.param.server.default",
+    choices: &[],
+    dynamic: Some(DynamicSource::McpServer),
+}];
+
+const MCP_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
+    name: "action",
+    kind: ParamKind::Choice,
+    required: false,
+    accepts_text: false,
+    description: "web.commands.mcp.param.action.desc",
+    placeholder: "",
+    default_behavior: "web.commands.mcp.param.action.default",
+    choices: &[ParamChoiceSpec {
+        value: "reconnect",
+        label: "",
+        description: "web.commands.mcp.choice.reconnect.desc",
+        params: MCP_RECONNECT_PARAMS,
+    }],
+    dynamic: None,
+}];
+
+const PLUGINS_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
+    name: "action",
+    kind: ParamKind::Choice,
+    required: false,
+    accepts_text: false,
+    description: "web.commands.plugins.param.action.desc",
+    placeholder: "",
+    default_behavior: "web.commands.plugins.param.action.default",
+    choices: &[ParamChoiceSpec {
+        value: "reload",
+        label: "",
+        description: "web.commands.plugins.choice.reload.desc",
+        params: &[],
+    }],
+    dynamic: None,
+}];
+
+fn params_for(id: CommandId) -> &'static [CommandParamSpec] {
+    match id {
+        CommandId::Export => EXPORT_PARAMS,
+        CommandId::Plan => PLAN_PARAMS,
+        CommandId::Goal => GOAL_PARAMS,
+        CommandId::Autonomy => AUTONOMY_PARAMS,
+        CommandId::Permission => PERMISSION_PARAMS,
+        CommandId::Ask => ASK_PARAMS,
+        CommandId::CompactSkills => COMPACT_SKILLS_PARAMS,
+        CommandId::Btw => BTW_PARAMS,
+        CommandId::Workflow => WORKFLOW_PARAMS,
+        CommandId::Mcp => MCP_PARAMS,
+        CommandId::Plugins => PLUGINS_PARAMS,
+        _ => &[],
+    }
+}
+
+/// 交付给前端的元数据清单（剥离 `id`/`args`，附带结构化 `params`，`flag` 是特性键名）。
 pub fn command_metas() -> Vec<CommandMeta> {
-    COMMANDS.iter().map(CommandSpec::meta).collect()
+    COMMANDS
+        .iter()
+        .map(|spec| spec.meta_with_params(params_for(spec.id)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -530,6 +804,61 @@ mod tests {
         assert!(json.contains("\"group\":\"agents\""));
         // flag 展开成特性键名而不是 Rust 枚举名。
         assert!(json.contains("\"flag\":\"workflow\""));
+        assert!(json.contains("\"defaultBehavior\""));
+        assert!(json.contains("\"acceptsText\":true"));
+        assert!(json.contains("\"dynamic\":\"mcp_server\""));
+        assert!(json.contains("\"dynamic\":\"sandbox_mode\""));
+    }
+
+    #[test]
+    fn param_specs_match_usage_and_translate_cleanly() {
+        fn check_params(params: &[CommandParamSpec]) {
+            for param in params {
+                assert!(
+                    moc_protocol::commands::try_translate(param.description).is_some(),
+                    "参数 {} 缺少 locale 键 {}",
+                    param.name,
+                    param.description
+                );
+                if !param.placeholder.is_empty() {
+                    assert!(
+                        moc_protocol::commands::try_translate(param.placeholder).is_some(),
+                        "参数 {} 缺少 placeholder 键 {}",
+                        param.name,
+                        param.placeholder
+                    );
+                }
+                if !param.default_behavior.is_empty() {
+                    assert!(
+                        moc_protocol::commands::try_translate(param.default_behavior).is_some(),
+                        "参数 {} 缺少 default_behavior 键 {}",
+                        param.name,
+                        param.default_behavior
+                    );
+                }
+                for choice in param.choices {
+                    assert!(
+                        moc_protocol::commands::try_translate(choice.description).is_some(),
+                        "选项 {} 缺少 locale 键 {}",
+                        choice.value,
+                        choice.description
+                    );
+                    check_params(choice.params);
+                }
+            }
+        }
+
+        for spec in COMMANDS {
+            let params = params_for(spec.id);
+            // 带 usage 的内置命令一律声明结构化参数，避免漏掉前端引导。
+            assert_eq!(
+                !spec.usage.is_empty(),
+                !params.is_empty(),
+                "命令 /{} 的 usage 与结构化 params 必须成对维护",
+                spec.name
+            );
+            check_params(params);
+        }
     }
 
     #[test]
