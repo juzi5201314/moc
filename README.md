@@ -2,6 +2,8 @@
 
 用 Rust 编写的 AI 编码助手。默认提供终端界面（TUI），无交互终端时自动退回行式模式；也内置浏览器界面（`moc web`）、编辑器接入（`moc acp`）和脚本批处理模式（`--print`）。
 
+MOC 的全称是 Mind Over Code。
+
 ## 主要特性
 
 - **多种使用方式**：终端 TUI、浏览器界面（[docs/web.md](docs/web.md)）、Zed / Neovim 等编辑器接入（[docs/acp.md](docs/acp.md)）与非交互命令行，共用同一套配置和会话数据。
