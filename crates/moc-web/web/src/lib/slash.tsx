@@ -25,13 +25,13 @@ import { openFile } from "@/store/files";
 import { useLayout } from "@/store/layout";
 import {
   closeSession,
-  compactSession,
   compactSkills,
   createQuickSession,
   refreshSideData,
   setSessionAutonomy,
   setSessionPermission,
   togglePlanMode,
+  triggerSessionCompact,
 } from "@/store/lifecycle";
 import { useMcp } from "@/store/mcp";
 import { useSessions } from "@/store/sessions";
@@ -370,20 +370,7 @@ export function runSlash(
       void retrySession(sessionId);
       break;
     case "compact":
-      void compactSession(sessionId)
-        .then((result) => {
-          if (result.method === "noop") {
-            toast(t("slash.compact_empty"));
-            return;
-          }
-          toast.success(
-            t("slash.compacted", {
-              before: result.tokens_before.toLocaleString(),
-              after: result.tokens_after.toLocaleString(),
-            }),
-          );
-        })
-        .catch((error) => toast.error(t("slash.compact_failed", { error: errorText(error) })));
+      void triggerSessionCompact(sessionId, args);
       break;
     case "model":
       useUi.getState().set({ modelPicker: sessionId });

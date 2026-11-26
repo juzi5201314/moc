@@ -22,6 +22,8 @@ export type SettingsSection =
 export type UiState = {
   /** 技能维护占用前台；不写 transcript 或持久化状态。 */
   skillsWorking: string | null;
+  /** 正在发起或等待 `session/compact` 的会话集合，用于按钮防重入与状态展示。 */
+  compactingSessions: Record<string, true>;
   /** 浏览 core 所在机器：给 `onPickFiles` 时是多选文件模式，否则只选目录。 */
   folderPicker: {
     open: boolean;
@@ -59,6 +61,7 @@ export type UiState = {
 
 export const useUi = create<UiState>()((set) => ({
   skillsWorking: null,
+  compactingSessions: {},
   folderPicker: { open: false },
   settings: { open: false },
   palette: false,

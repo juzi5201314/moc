@@ -13,13 +13,16 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { sectionTone } from "@/components/context/section-tone";
 import { AgentsTab, UsageTab } from "@/components/panels/inspector-tabs";
+import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useT } from "@/lib/i18n";
 import { compactTokens } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import type { ContextUsageResult, McpServerInfo, McpServerPhase } from "@/protocol/types";
 import { selectFeatures, useConnection } from "@/store/connection";
+import { triggerSessionCompact } from "@/store/lifecycle";
 import { mcpReconnectPending, useMcp } from "@/store/mcp";
 import { refreshContext, useTranscript } from "@/store/transcript";
 import { openSettings, useUi } from "@/store/ui";
@@ -36,7 +39,7 @@ function popoverFor(sessionId: string, kind: "usage" | "agents" | "mcp") {
 
 /**
  * 上下文圆环：点击弹出简略上下文窗口（占用条 + 分块图例），点别处收起；
- * 底部入口进入详细上下文窗口（与 /context 同一个模态）。
+ * 底部左侧进入原地手动压缩确认（可选聚焦说明），右侧进入详细上下文窗口（与 /context 同一个模态）。
  */
 export function ContextRing({
   sessionId,
@@ -47,6 +50,35 @@ export function ContextRing({
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [instructions, setInstructions] = useState("");
+  const running = useTranscript((state) => Boolean(state.bySession[sessionId]?.running));
+  const readOnly = useTranscript((state) => Boolean(state.bySession[sessionId]?.readOnly));
+  const transcriptCompacting = useTranscript(
+    (state) => state.bySession[sessionId]?.compactingId != null,
+  );
+  const skillsWorking = useUi((state) => state.skillsWorking !== null);
+  const compactPending = useUi((state) => Boolean(state.compactingSessions[sessionId]));
+  const compacting = transcriptCompacting || compactPending;
+
+  const compactBlockedReason = compacting
+    ? t("pop.ctx_compacting")
+    : skillsWorking
+      ? t("slash.skills_busy")
+      : readOnly
+        ? t("pop.ctx_compact_readonly")
+        : running
+          ? t("slash.running", { name: "compact" })
+          : null;
+  const compactDisabled = sessionId === "draft-session" || compactBlockedReason !== null;
+
+  useEffect(() => {
+    void sessionId;
+    setOpen(false);
+    setConfirming(false);
+    setInstructions("");
+  }, [sessionId]);
+
   const used = context.total_tokens;
   const windowSize = context.context_window;
   const percent = Math.min(100, Math.round((used / windowSize) * 100));
@@ -56,15 +88,28 @@ export function ContextRing({
   const radius = (size - stroke) / 2;
   const circumference = 2 * Math.PI * radius;
 
+  const handleOpenChange = (next: boolean) => {
+    setOpen(next);
+    if (!next) {
+      setConfirming(false);
+      setInstructions("");
+      return;
+    }
+    // 圆环数据只在会话事件后刷新，打开时重读一次，读不到沿用旧值。
+    void refreshContext(sessionId).catch(() => undefined);
+  };
+
+  const handleConfirmCompact = () => {
+    if (compactDisabled) return;
+    const focus = instructions;
+    setOpen(false);
+    setConfirming(false);
+    setInstructions("");
+    void triggerSessionCompact(sessionId, focus);
+  };
+
   return (
-    <Popover
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        // 圆环数据只在会话事件后刷新，打开时重读一次，读不到沿用旧值。
-        if (next) void refreshContext(sessionId).catch(() => undefined);
-      }}
-    >
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <Tooltip>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
@@ -117,73 +162,150 @@ export function ContextRing({
           {`${t("pop.context", { n: percent })} · ${compactTokens(used) || 0} / ${compactTokens(windowSize)}`}
         </TooltipContent>
       </Tooltip>
-      <PopoverContent side="top" align="end" sideOffset={8} className="w-72 p-0">
-        <div className="px-3.5 pt-3 pb-2">
-          <div className="text-xs text-muted-foreground">{t("cv.title")}</div>
-          <div className="mt-1 flex items-baseline justify-between gap-3 text-ui tabular-nums">
-            <span className="font-medium text-foreground">
-              {t("pop.ctx_used", { n: share(used) })}
-            </span>
-            <span className="text-muted-foreground">
-              {compactTokens(used) || 0} / {compactTokens(windowSize)}
-            </span>
-          </div>
-          {/* 轨道与 Free space 用前景色透明度：bg-muted 在深色下与浮层同色，会整段消失。 */}
-          <div
-            className="mt-2 flex h-1.5 overflow-hidden rounded-full bg-foreground/10"
-            aria-hidden="true"
-          >
-            {context.sections.map((section, index) => {
-              const tone = sectionTone(section.name, index);
-              return (
-                <div
-                  key={section.name}
-                  className={tone.className}
-                  style={{ width: share(section.tokens), opacity: tone.opacity }}
-                />
-              );
-            })}
-          </div>
-        </div>
-        <ul className="px-3.5 pb-2">
-          {[
-            ...context.sections.map((section, index) => ({
-              name: section.name,
-              tokens: section.tokens,
-              tone: sectionTone(section.name, index),
-            })),
-            {
-              name: t("pop.ctx_free"),
-              tokens: Math.max(0, windowSize - used),
-              tone: { className: "bg-foreground/10", opacity: 1 },
-            },
-          ].map((row) => (
-            <li key={row.name} className="flex h-7 items-center gap-2.5 text-ui">
-              <span
-                className={cn("size-2 shrink-0 rounded-[3px]", row.tone.className)}
-                style={{ opacity: row.tone.opacity }}
+      <PopoverContent
+        side="top"
+        align="end"
+        sideOffset={8}
+        className="w-72 p-0"
+        onEscapeKeyDown={(event) => {
+          if (confirming) {
+            event.preventDefault();
+            setConfirming(false);
+          }
+        }}
+      >
+        {confirming ? (
+          <div>
+            <div className="space-y-2.5 px-3.5 pt-3 pb-3">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-xs font-medium text-foreground">
+                  {t("pop.ctx_compact_title")}
+                </span>
+                <span className="font-mono text-xs tabular-nums text-muted-foreground">
+                  {share(used)}
+                </span>
+              </div>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {t("pop.ctx_compact_desc")}
+              </p>
+              <Textarea
+                rows={2}
+                autoFocus
+                value={instructions}
+                onChange={(event) => setInstructions(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    handleConfirmCompact();
+                  }
+                }}
+                placeholder={t("pop.ctx_compact_placeholder")}
+                aria-label={t("pop.ctx_compact_focus_label")}
+                className="min-h-14 resize-none rounded-lg border-border-subtle bg-background/60 px-2.5 py-2 text-xs shadow-none placeholder:text-text-tertiary focus-visible:border-border focus-visible:ring-0 md:text-xs"
               />
-              <span className="min-w-0 flex-1 truncate text-foreground">{row.name}</span>
-              <span className="tabular-nums text-muted-foreground">
-                {compactTokens(row.tokens) || 0}
-              </span>
-              <span className="w-12 text-right tabular-nums text-foreground">
-                {share(row.tokens)}
-              </span>
-            </li>
-          ))}
-        </ul>
-        <button
-          type="button"
-          onClick={() => {
-            setOpen(false);
-            useUi.getState().set({ contextDialog: sessionId });
-          }}
-          className="flex h-9 w-full items-center gap-2 border-t border-border-subtle px-3.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          {t("pop.ctx_details")}
-          <ChevronRightIcon className="ml-auto size-3.5" />
-        </button>
+            </div>
+            <div className="flex items-center justify-end gap-1.5 border-t border-border-subtle px-3 py-2">
+              <Button type="button" variant="ghost" size="xs" onClick={() => setConfirming(false)}>
+                {t("common.cancel")}
+              </Button>
+              <Button
+                type="button"
+                size="xs"
+                disabled={compactDisabled}
+                title={compactBlockedReason ?? undefined}
+                onClick={handleConfirmCompact}
+              >
+                {t("pop.ctx_compact")}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="px-3.5 pt-3 pb-2">
+              <div className="text-xs text-muted-foreground">{t("cv.title")}</div>
+              <div className="mt-1 flex items-baseline justify-between gap-3 text-ui tabular-nums">
+                <span className="font-medium text-foreground">
+                  {t("pop.ctx_used", { n: share(used) })}
+                </span>
+                <span className="text-muted-foreground">
+                  {compactTokens(used) || 0} / {compactTokens(windowSize)}
+                </span>
+              </div>
+              {/* 轨道与 Free space 用前景色透明度：bg-muted 在深色下与浮层同色，会整段消失。 */}
+              <div
+                className="mt-2 flex h-1.5 overflow-hidden rounded-full bg-foreground/10"
+                aria-hidden="true"
+              >
+                {context.sections.map((section, index) => {
+                  const tone = sectionTone(section.name, index);
+                  return (
+                    <div
+                      key={section.name}
+                      className={tone.className}
+                      style={{ width: share(section.tokens), opacity: tone.opacity }}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+            <ul className="px-3.5 pb-2">
+              {[
+                ...context.sections.map((section, index) => ({
+                  name: section.name,
+                  tokens: section.tokens,
+                  tone: sectionTone(section.name, index),
+                })),
+                {
+                  name: t("pop.ctx_free"),
+                  tokens: Math.max(0, windowSize - used),
+                  tone: { className: "bg-foreground/10", opacity: 1 },
+                },
+              ].map((row) => (
+                <li key={row.name} className="flex h-7 items-center gap-2.5 text-ui">
+                  <span
+                    className={cn("size-2 shrink-0 rounded-[3px]", row.tone.className)}
+                    style={{ opacity: row.tone.opacity }}
+                  />
+                  <span className="min-w-0 flex-1 truncate text-foreground">{row.name}</span>
+                  <span className="tabular-nums text-muted-foreground">
+                    {compactTokens(row.tokens) || 0}
+                  </span>
+                  <span className="w-12 text-right tabular-nums text-foreground">
+                    {share(row.tokens)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <div className="grid grid-cols-2 divide-x divide-border-subtle border-t border-border-subtle">
+              <button
+                type="button"
+                disabled={compactDisabled}
+                title={compactBlockedReason ?? undefined}
+                onClick={() => setConfirming(true)}
+                className={cn(
+                  "flex h-9 w-full items-center gap-1.5 px-3.5 text-xs transition-colors enabled:hover:bg-accent enabled:hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40",
+                  compacting ? "text-brand" : "text-muted-foreground",
+                )}
+              >
+                {compacting && <Loader2Icon className="size-3 shrink-0 animate-spin" />}
+                <span className="truncate">
+                  {compacting ? t("pop.ctx_compacting") : t("pop.ctx_compact")}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleOpenChange(false);
+                  useUi.getState().set({ contextDialog: sessionId });
+                }}
+                className="flex h-9 w-full items-center gap-2 px-3.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                {t("pop.ctx_details")}
+                <ChevronRightIcon className="ml-auto size-3.5" />
+              </button>
+            </div>
+          </>
+        )}
       </PopoverContent>
     </Popover>
   );

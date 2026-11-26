@@ -66,6 +66,19 @@ describe("slash 注册表语义", () => {
       });
       runSlash("session", "/compact", commands);
       await vi.waitFor(() => expect(success).toHaveBeenCalled());
+      call.mockResolvedValueOnce({
+        method: "moc",
+        tokens_before: 1000,
+        tokens_after: 400,
+        full: true,
+        summary_chars: 90,
+      });
+      runSlash("session", "/compact 保留当前任务", commands);
+      await vi.waitFor(() => expect(success).toHaveBeenCalledTimes(2));
+      expect(call).toHaveBeenLastCalledWith("session/compact", {
+        session_id: "session",
+        instructions: "保留当前任务",
+      });
       call.mockRejectedValueOnce(new Error("upstream failed"));
       runSlash("session", "/compact", commands);
       await vi.waitFor(() =>

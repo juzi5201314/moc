@@ -51,7 +51,11 @@ compact_skills.choice.cleanup.desc = { zh = "清理失效或孤立的 skills 摘
 compact_skills.param.cleanup_scope.desc = { zh = "可选范围，传入 all 将清空全部摘要缓存", en = "Optional scope; pass all to clear every summary cache" }
 compact_skills.param.cleanup_scope.default = { zh = "仅清理已失效的摘要缓存", en = "Clean up only stale summary caches" }
 compact_skills.choice.all.desc = { zh = "清空全部 skills 摘要缓存", en = "Clear all skills summary caches" }
-compact.desc = { zh = "压缩当前对话 context", en = "Compact the current context" }
+compact.usage = { zh = "[instructions]", en = "[instructions]" }
+compact.desc = { zh = "压缩当前对话 context，可附带需重点保留的内容", en = "Compact the current context, optionally with focus instructions" }
+compact.param.instructions.desc = { zh = "可选聚焦说明，交给摘要 model 重点保留指定决定、路径或进度", en = "Optional focus instructions telling the summary model what to preserve" }
+compact.param.instructions.placeholder = { zh = "输入需重点保留的内容…", en = "Specify what to preserve..." }
+compact.param.instructions.default = { zh = "按默认策略自动摘要并归档旧历史", en = "Summarize and archive older history using the default strategy" }
 model.desc = { zh = "切换 model 与 thinking effort", en = "Switch model and thinking effort" }
 engine.desc = { zh = "切换 session 引擎（仅空白 session 可切）", en = "Cycle the session engine (blank sessions only)" }
 clm_experimental.desc = { zh = "切换 CLM 实验引擎，启用后本 session 固定使用 CLM", en = "Toggle the experimental CLM engine; once enabled this session is pinned to CLM" }

@@ -578,10 +578,53 @@ export async function setSessionFastMode(sessionId: string, enabled: boolean): P
 }
 
 /** 手动压缩上下文；完成后刷新上下文占用。 */
-export async function compactSession(sessionId: string): Promise<CompactResult> {
-  const result = await rpc.call<CompactResult>("session/compact", { session_id: sessionId });
-  void refreshSideData(sessionId);
-  return result;
+export async function compactSession(
+  sessionId: string,
+  instructions?: string,
+): Promise<CompactResult> {
+  const focus = instructions?.trim();
+  useUi.setState((state) => ({
+    compactingSessions: { ...state.compactingSessions, [sessionId]: true },
+  }));
+  try {
+    const result = await rpc.call<CompactResult>("session/compact", {
+      session_id: sessionId,
+      ...(focus ? { instructions: focus } : {}),
+    });
+    void refreshSideData(sessionId);
+    return result;
+  } finally {
+    useUi.setState((state) => {
+      if (!state.compactingSessions[sessionId]) return state;
+      const { [sessionId]: _, ...rest } = state.compactingSessions;
+      return { compactingSessions: rest };
+    });
+  }
+}
+
+/** 发起手动压缩并统一反馈结果（`/compact` 与上下文浮层共用）。 */
+export async function triggerSessionCompact(
+  sessionId: string,
+  instructions?: string,
+): Promise<void> {
+  if (useUi.getState().compactingSessions[sessionId]) return;
+  try {
+    const result = await compactSession(sessionId, instructions);
+    if (result.method === "noop") {
+      toast(t("slash.compact_empty"));
+      return;
+    }
+    toast.success(
+      t("slash.compacted", {
+        before: result.tokens_before.toLocaleString(),
+        after: result.tokens_after.toLocaleString(),
+      }),
+    );
+  } catch (error) {
+    toast.error(
+      t("slash.compact_failed", { error: error instanceof Error ? error.message : String(error) }),
+    );
+  }
 }
 
 /** 独立前台操作；状态仅存本地滚动视图，不 materialize 草稿或写入 core。 */

@@ -252,7 +252,7 @@ pub const COMMANDS: &[CommandSpec<CommandId>] = &[
         id: CommandId::Compact,
         name: "compact",
         aliases: &[],
-        usage: "",
+        usage: "web.commands.compact.usage",
         description: "web.commands.compact.desc",
         group: CommandGroup::Context,
         needs_session: true,
@@ -697,6 +697,18 @@ const COMPACT_SKILLS_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
     dynamic: None,
 }];
 
+const COMPACT_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
+    name: "instructions",
+    kind: ParamKind::Text,
+    required: false,
+    accepts_text: false,
+    description: "web.commands.compact.param.instructions.desc",
+    placeholder: "web.commands.compact.param.instructions.placeholder",
+    default_behavior: "web.commands.compact.param.instructions.default",
+    choices: &[],
+    dynamic: None,
+}];
+
 const BTW_PARAMS: &[CommandParamSpec] = &[CommandParamSpec {
     name: "question",
     kind: ParamKind::Text,
@@ -776,6 +788,7 @@ fn params_for(id: CommandId) -> &'static [CommandParamSpec] {
         CommandId::Permission => PERMISSION_PARAMS,
         CommandId::Ask => ASK_PARAMS,
         CommandId::CompactSkills => COMPACT_SKILLS_PARAMS,
+        CommandId::Compact => COMPACT_PARAMS,
         CommandId::Btw => BTW_PARAMS,
         CommandId::Workflow => WORKFLOW_PARAMS,
         CommandId::Mcp => MCP_PARAMS,
